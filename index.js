@@ -117,36 +117,37 @@ async function handleCancel(chatId) {
 
 
 // Обработка кнопок записи
-async function handleCallback(chatId, data) {
-  if (data === 'cmd_book') return await handleBook(chatId);
-  if (data === 'cmd_schedule') return await handleSchedule(chatId);
-  if (data === 'cmd_mybooking') return await handleMyBooking(chatId);
-  if (data === 'cmd_cancel') return await handleCancel(chatId);
+async function handleCallback(chatId, data, callbackQueryId) {
+    if (data === 'cmd_book') return await handleBook(chatId);
+    if (data === 'cmd_schedule') return await handleSchedule(chatId);
+    if (data === 'cmd_mybooking') return await handleMyBooking(chatId);
+    if (data === 'cmd_cancel') return await handleCancel(chatId);
 
-  const classId = data.replace('book_', '');
-  const s = schedule.find(x => x.id === classId);
-  if (!s) return;
+    const classId = data.replace('book_', '');
+    const s = schedule.find(x => x.id === classId);
+    if (!s) return;
 
-  try {
-    await db.collection('bookings').insertOne({
-      chatId,
-      classId,
-      className: s.type,
-      day: s.day,
-      time: s.time,
-      bookedAt: new Date(),
-    });
-    await answerCallback(chatId, `✅ Записан(а) на ${s.type}!`);
-    await sendMessage(chatId, `✅ Ты записан(а) на ${s.day} ${s.time} — ${s.type}\n\nОтменить: /cancel\nПроверить: /mybooking`);
-  } catch (err) {
-    if (err.code === 11000) {
-      await answerCallback(chatId, 'Ты уже записан(а)! Отмени текущую через /cancel');
-    } else {
-      console.error('Ошибка записи:', err);
-      await answerCallback(chatId, 'Ошибка при записи. Попробуй позже.');
+    try {
+        await db.collection('bookings').insertOne({
+            chatId,
+            classId,
+            className: s.type,
+            day: s.day,
+            time: s.time,
+            bookedAt: new Date(),
+        });
+        await answerCallback(callbackQueryId, '✅ Запись произведена!');
+        await sendMessage(chatId, `✅ Запись произведена!\n${s.day} ${s.time} — ${s.type}\n\nОтменить: /cancel\nПроверить: /mybooking`);
+    } catch (err) {
+        if (err.code === 11000) {
+            await answerCallback(callbackQueryId, 'Ты уже записан(а)!');
+        } else {
+            console.error('Ошибка записи:', err);
+            await answerCallback(callbackQueryId, 'Ошибка. Попробуй позже.');
+        }
     }
-  }
 }
+
 
 
 // Webhook
@@ -165,8 +166,11 @@ app.post(WEBHOOK_PATH, async (req, res) => {
       else if (msg.text === '/cancel') await handleCancel(chatId);
     }
     if (cb) {
-      await handleCallback(cb.from.id, cb.data);
-    }
+    const chatId = cb.message.chat.id;
+    const callbackQueryId = cb.id;
+    await handleCallback(chatId, cb.data, callbackQueryId);
+}
+
   } catch (err) {
     console.error('Webhook error:', err);
   }
