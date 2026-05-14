@@ -124,7 +124,49 @@ async function handleCancel(chatId) {
 
 
 // Обработка кнопок записи
-async function handleCallback(chatId, data, callbackQueryId) {
+async function handleCallback(chatId, data, callbackQueryId, fromUser) {
+  // ===== АДМИНКА =====
+    if (data === 'admin_refresh') {
+        const bookings = await db.collection('bookings').find({}).sort({ bookedAt: -1 }).toArray();
+        if (!bookings.length) {
+            await answerCallback(callbackQueryId, '📭 Записей нет');
+            return await sendMessage(chatId, '📭 Записей пока нет.');
+        }
+        const grouped = {};
+        bookings.forEach(b => {
+            const key = `${b.day} ${b.time} — ${b.className}`;
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(b);
+        });
+        let text = '📋 Все записи:\n\n';
+        for (const [slot, list] of Object.entries(grouped)) {
+            text += `🗓 ${slot} — ${list.length} чел.\n`;
+            list.forEach((b, i) => {
+                const date = b.bookedAt.toLocaleString('ru-RU', { timeZone: 'Europe/Minsk' });
+                text += `  ${i + 1}. @${b.username} (${b.firstName}) | ${date}\n`;
+            });
+            text += '\n';
+        }
+        text += `\nВсего записей: ${bookings.length}`;
+        const buttons = {
+            inline_keyboard: [
+                [{ text: '🔄 Обновить', callback_data: 'admin_refresh' }],
+                [{ text: '🗑 Очистить все', callback_data: 'admin_clear' }]
+            ]
+        };
+        await answerCallback(callbackQueryId, 'Обновлено');
+        await sendMessage(chatId, text, buttons);
+        return;
+    }
+
+    if (data === 'admin_clear') {
+        const count = await db.collection('bookings').countDocuments({});
+        await db.collection('bookings').deleteMany({});
+        await answerCallback(callbackQueryId, `Удалено: ${count}`);
+        await sendMessage(chatId, `🗑 Удалено записей: ${count}`);
+        return;
+    }
+    // ===== КОНЕЦ АДМИНКИ =====
     if (data === 'cmd_book') return await handleBook(chatId);
     if (data === 'cmd_schedule') return await handleSchedule(chatId);
     if (data === 'cmd_mybooking') return await handleMyBooking(chatId);
@@ -143,13 +185,17 @@ async function handleCallback(chatId, data, callbackQueryId) {
 
     try {
         await db.collection('bookings').insertOne({
-            chatId,
-            classId,
-            className: s.type,
-            day: s.day,
-            time: s.time,
-            bookedAt: new Date(),
-        });
+      await db.collection('bookings').insertOne({
+    chatId,
+    username: fromUser.username || 'нет username',
+    firstName: fromUser.first_name || '',
+    classId,
+    className: s.type,
+    day: s.day,
+    time: s.time,
+    bookedAt: new Date(),
+});
+
         await answerCallback(callbackQueryId, '✅ Запись произведена!');
         await sendMessage(chatId, `✅ Запись произведена!\n${s.day} ${s.time} — ${s.type}`, menuButtons);
     } catch (err) {
@@ -183,7 +229,7 @@ app.post(WEBHOOK_PATH, async (req, res) => {
 if (cb) {
     const chatId = cb.message.chat.id;
     const callbackQueryId = cb.id;
-    await handleCallback(chatId, cb.data, callbackQueryId);
+    await handleCallback(chatId, cb.data, callbackQueryId, cb.from);
 }
 
 
@@ -196,3 +242,47 @@ if (cb) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
+
+// ==================== АДМИНКА ====================
+
+const ADMIN_ID = 8658993738; // ← впиши свой Telegram ID
+
+bot.onText(/\/admin/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (chatId !== ADMIN_ID) return;
+
+    const bookings = await db.collection('bookings').find({}).sort({ bookedAt: -1 }).toArray();
+
+    if (!bookings.length) {
+        return await sendMessage(chatId, '📭 Записей пока нет.');
+    }
+
+    const grouped = {};
+    bookings.forEach(b => {
+        const key = `${b.day} ${b.time} — ${b.className}`;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(b);
+    });
+
+    let text = '📋 Все записи:\n\n';
+    for (const [slot, list] of Object.entries(grouped)) {
+        text += `🗓 ${slot} — ${list.length} чел.\n`;
+        list.forEach((b, i) => {
+            const date = b.bookedAt.toLocaleString('ru-RU', { timeZone: 'Europe/Minsk' });
+            text += `  ${i + 1}. ID: ${b.chatId} | ${date}\n`;
+        });
+        text += '\n';
+    }
+
+    text += `\nВсего записей: ${bookings.length}`;
+
+    const buttons = {
+        inline_keyboard: [
+            [{ text: '🔄 Обновить', callback_data: 'admin_refresh' }],
+            [{ text: '🗑 Очистить все', callback_data: 'admin_clear' }]
+        ]
+    };
+
+    await sendMessage(chatId, text, buttons);
+});
+
