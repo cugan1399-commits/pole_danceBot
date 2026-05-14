@@ -8,11 +8,8 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// Временное хранилище (сбросится при перезапуске)
 const bookings = {};
-
-// Доступные слоты
-const SLOTS = ['10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00'];
+const SLOTS = ['10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00'];
 
 function getDates() {
   const dates = [];
@@ -27,8 +24,9 @@ function getDates() {
 
 function formatDate(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
-  const days = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-  return `${d.getDate()} ${['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'][d.getMonth()]} (${days[d.getDay()]})`;
+  const days = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
+  const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  return `${d.getDate()} ${months[d.getMonth()]} (${days[d.getDay()]})`;
 }
 
 async function sendMessage(chatId, text, keyboard) {
@@ -62,12 +60,10 @@ async function handleBook(chatId) {
 async function handleDateSelect(chatId, date) {
   const taken = bookings[date] || [];
   const available = SLOTS.filter(s => !taken.includes(s));
-  
   if (available.length === 0) {
     await sendMessage(chatId, `На ${formatDate(date)} все слоты заняты 😔`);
     return;
   }
-  
   const keyboard = {
     inline_keyboard: available.map(s => ([{ text: s, callback_data: `time_${date}_${s}` }]))
   };
@@ -77,15 +73,13 @@ async function handleDateSelect(chatId, date) {
 async function handleTimeSelect(chatId, date, time) {
   if (!bookings[date]) bookings[date] = [];
   bookings[date].push(time);
-  
-  await sendMessage(chatId, `✅ Записано!\n📅 ${formatDate(date)}\n🕐 ${time}\n\nЖду тебя! 😈`);
+  await sendMessage(chatId, `✅ Записано!\n📅 ${formatDate(date)}\n🕐 ${time}\n\nЖду тебя!`);
 }
 
 async function handleMyBookings(chatId) {
   const dates = getDates();
   let text = '📋 Твои записи:\n\n';
   let found = false;
-  
   for (const date of dates) {
     const taken = bookings[date] || [];
     if (taken.length > 0) {
@@ -93,7 +87,6 @@ async function handleMyBookings(chatId) {
       text += `<b>${formatDate(date)}</b>: ${taken.join(', ')}\n`;
     }
   }
-  
   if (!found) text += 'Пока записей нет';
   await sendMessage(chatId, text);
 }
@@ -101,24 +94,24 @@ async function handleMyBookings(chatId) {
 async function handleSchedule(chatId) {
   const dates = getDates();
   let text = '🗓 Расписание на неделю:\n\n';
-  
   for (const date of dates) {
     const taken = bookings[date] || [];
     const available = SLOTS.filter(s => !taken.includes(s));
     text += `<b>${formatDate(date)}</b>\n`;
-    text += taken.length > 0 
-      ? `  ❌ Занято: ${taken.join(', ')}\n  ✅ Свободно: ${available.join(', ')}\n\n`
-      : `  ✅ Все слоты свободны\n\n`;
+    if (taken.length > 0) {
+      text += `  ❌ Занято: ${taken.join(', ')}\n  ✅ Свободно: ${available.join(', ')}\n\n`;
+    } else {
+      text += `  ✅ Все слоты свободны\n\n`;
+    }
   }
-  
   await sendMessage(chatId, text);
 }
 
 app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
   const { message, callback_query } = req.body;
-  
   try {
-    if (message?.text?.startsWith('/start')) {
+    if (message && message.text && message.text.startsWith('/start')) {
       await handleStart(message.chat.id);
-    } else if (message?.text?.startsWith('/book')) {
-      await handleBook(message.c…
+    } else if (message && message.text && message.text.startsWith('/book')) {
+      await handleBook(message.chat.id);
+    } else if
