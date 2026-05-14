@@ -114,4 +114,27 @@ app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
       await handleStart(message.chat.id);
     } else if (message && message.text && message.text.startsWith('/book')) {
       await handleBook(message.chat.id);
-    } else if
+    } else if (message && message.text && message.text.startsWith('/schedule')) {
+      await handleSchedule(message.chat.id);
+    }
+    if (callback_query) {
+      const chatId = callback_query.message.chat.id;
+      const data = callback_query.data;
+      await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: callback_query.id });
+      if (data === 'book') await handleBook(chatId);
+      else if (data === 'my_bookings') await handleMyBookings(chatId);
+      else if (data === 'schedule') await handleSchedule(chatId);
+      else if (data.startsWith('date_')) await handleDateSelect(chatId, data.slice(5));
+      else if (data.startsWith('time_')) {
+        const parts = data.split('_');
+        await handleTimeSelect(chatId, parts[1], parts[2]);
+      }
+    }
+  } catch (err) {
+    console.error('Error:', err.message);
+  }
+  res.sendStatus(200);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Bot running on port ${PORT}`));
