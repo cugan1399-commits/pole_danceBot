@@ -183,18 +183,18 @@ async function handleCallback(chatId, data, callbackQueryId, fromUser) {
         ]
     };
 
-    try {
-        await db.collection('bookings').insertOne({
-      await db.collection('bookings').insertOne({
-    chatId,
-    username: fromUser.username || 'нет username',
-    firstName: fromUser.first_name || '',
-    classId,
-    className: s.type,
-    day: s.day,
-    time: s.time,
-    bookedAt: new Date(),
-});
+try {
+    await db.collection('bookings').insertOne({
+        chatId,
+        username: fromUser.username || 'нет username',
+        firstName: fromUser.first_name || '',
+        classId,
+        className: s.type,
+        day: s.day,
+        time: s.time,
+        bookedAt: new Date(),
+    });
+
 
         await answerCallback(callbackQueryId, '✅ Запись произведена!');
         await sendMessage(chatId, `✅ Запись произведена!\n${s.day} ${s.time} — ${s.type}`, menuButtons);
