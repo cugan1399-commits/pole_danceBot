@@ -83,34 +83,38 @@ async function handleSchedule(chatId) {
 
 // /mybooking
 async function handleMyBooking(chatId) {
-  try {
-    const booking = await db.collection('bookings').findOne({ chatId });
-    if (!booking) {
-      await sendMessage(chatId, 'У тебя нет активной записи. Запишись через /book');
-      return;
-    }
-    const s = schedule.find(x => x.id === booking.classId);
-    await sendMessage(chatId, `✅ Ты записан(а): ${s.day} ${s.time} — ${s.type}`);
-  } catch (err) {
-    console.error('Ошибка mybooking:', err);
-    await sendMessage(chatId, 'Ошибка при проверке записи. Попробуй позже.');
+  const booking = await db.collection('bookings').findOne({ chatId });
+
+  if (!booking) {
+    const buttons = {
+      inline_keyboard: [
+        [{ text: '📅 Записаться', callback_data: 'cmd_book' }]
+      ]
+    };
+    return await sendMessage(chatId, 'У тебя нет активной записи.', buttons);
   }
+
+  await sendMessage(chatId, `✅ Твоя запись:\n${booking.day} ${booking.time} — ${booking.className}\n\nОтменить: /cancel`);
 }
+
 
 // /cancel
 async function handleCancel(chatId) {
-  try {
-    const result = await db.collection('bookings').deleteOne({ chatId });
-    if (result.deletedCount === 0) {
-      await sendMessage(chatId, 'У тебя нет активной записи.');
-    } else {
-      await sendMessage(chatId, '❌ Запись отменена.');
-    }
-  } catch (err) {
-    console.error('Ошибка cancel:', err);
-    await sendMessage(chatId, 'Ошибка при отмене. Попробуй позже.');
+  const booking = await db.collection('bookings').findOne({ chatId });
+
+  if (!booking) {
+    const buttons = {
+      inline_keyboard: [
+        [{ text: '📅 Записаться', callback_data: 'cmd_book' }]
+      ]
+    };
+    return await sendMessage(chatId, 'У тебя нет активной записи.', buttons);
   }
+
+  await db.collection('bookings').deleteOne({ chatId });
+  await sendMessage(chatId, '❌ Запись отменена.');
 }
+
 
 // Обработка кнопок записи
 async function handleCallback(chatId, data) {
