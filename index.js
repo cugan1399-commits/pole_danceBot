@@ -9,6 +9,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 const WEBHOOK_PATH = `/webhook/${BOT_TOKEN}`;
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const ADMIN_ID = 8658993738; // ← впиши свой Telegram ID
 
 // MongoDB подключение
 let db;
@@ -122,6 +123,43 @@ async function handleCancel(chatId) {
   await sendMessage(chatId, '❌ Запись отменена.');
 }
 
+//админка
+
+async function handleAdmin(chatId) {
+    if (chatId !== ADMIN_ID) return;
+
+    const bookings = await db.collection('bookings').find({}).sort({ bookedAt: -1 }).toArray();
+    if (!bookings.length) {
+        return await sendMessage(chatId, '📭 Записей пока нет.');
+    }
+
+    const grouped = {};
+    bookings.forEach(b => {
+        const key = `${b.day} ${b.time} — ${b.className}`;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(b);
+    });
+
+    let text = '📋 Все записи:\n\n';
+    for (const [slot, list] of Object.entries(grouped)) {
+        text += `🗓 ${slot} — ${list.length} чел.\n`;
+        list.forEach((b, i) => {
+            const date = b.bookedAt.toLocaleString('ru-RU', { timeZone: 'Europe/Minsk' });
+            text += `  ${i + 1}. @${b.username} (${b.firstName}) | ${date}\n`;
+        });
+        text += '\n';
+    }
+    text += `\nВсего записей: ${bookings.length}`;
+
+    const buttons = {
+        inline_keyboard: [
+            [{ text: '🔄 Обновить', callback_data: 'admin_refresh' }],
+            [{ text: '🗑 Очистить все', callback_data: 'admin_clear' }]
+        ]
+    };
+    await sendMessage(chatId, text, buttons);
+}
+
 
 // Обработка кнопок записи
 async function handleCallback(chatId, data, callbackQueryId, fromUser) {
@@ -225,6 +263,8 @@ app.post(WEBHOOK_PATH, async (req, res) => {
       else if (msg.text === '/schedule') await handleSchedule(chatId);
       else if (msg.text === '/mybooking') await handleMyBooking(chatId);
       else if (msg.text === '/cancel') await handleCancel(chatId);
+      else if (msg.text === '/admin') await handleAdmin(chatId);
+
     }
 if (cb) {
     const chatId = cb.message.chat.id;
@@ -243,46 +283,8 @@ if (cb) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
 
-// ==================== АДМИНКА ====================
 
-const ADMIN_ID = 8658993738; // ← впиши свой Telegram ID
 
-bot.onText(/\/admin/, async (msg) => {
-    const chatId = msg.chat.id;
-    if (chatId !== ADMIN_ID) return;
 
-    const bookings = await db.collection('bookings').find({}).sort({ bookedAt: -1 }).toArray();
 
-    if (!bookings.length) {
-        return await sendMessage(chatId, '📭 Записей пока нет.');
-    }
-
-    const grouped = {};
-    bookings.forEach(b => {
-        const key = `${b.day} ${b.time} — ${b.className}`;
-        if (!grouped[key]) grouped[key] = [];
-        grouped[key].push(b);
-    });
-
-    let text = '📋 Все записи:\n\n';
-    for (const [slot, list] of Object.entries(grouped)) {
-        text += `🗓 ${slot} — ${list.length} чел.\n`;
-        list.forEach((b, i) => {
-            const date = b.bookedAt.toLocaleString('ru-RU', { timeZone: 'Europe/Minsk' });
-            text += `  ${i + 1}. ID: ${b.chatId} | ${date}\n`;
-        });
-        text += '\n';
-    }
-
-    text += `\nВсего записей: ${bookings.length}`;
-
-    const buttons = {
-        inline_keyboard: [
-            [{ text: '🔄 Обновить', callback_data: 'admin_refresh' }],
-            [{ text: '🗑 Очистить все', callback_data: 'admin_clear' }]
-        ]
-    };
-
-    await sendMessage(chatId, text, buttons);
-});
 
