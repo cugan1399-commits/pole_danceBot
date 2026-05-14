@@ -52,9 +52,17 @@ function answerCallback(callbackQueryId, text = '') {
 
 // /start
 async function handleStart(chatId) {
-  const text = `👋 Привет! Я бот для записи на занятия pole dance.\n\nВыбери команду:\n/book — записаться\n/schedule — расписание\n/mybooking — моя запись\n/cancel — отменить запись`;
-  await sendMessage(chatId, text);
+  const buttons = {
+    inline_keyboard: [
+      [{ text: '📅 Записаться', callback_data: 'cmd_book' }],
+      [{ text: '📋 Расписание', callback_data: 'cmd_schedule' }],
+      [{ text: '✅ Моя запись', callback_data: 'cmd_mybooking' }],
+      [{ text: '❌ Отменить запись', callback_data: 'cmd_cancel' }],
+    ]
+  };
+  await sendMessage(chatId, '👋 Привет! Я бот для записи на занятия pole dance.\n\nВыбери действие:', buttons);
 }
+
 
 // /book
 async function handleBook(chatId) {
@@ -106,6 +114,11 @@ async function handleCancel(chatId) {
 
 // Обработка кнопок записи
 async function handleCallback(chatId, data) {
+  if (data === 'cmd_book') return await handleBook(chatId);
+  if (data === 'cmd_schedule') return await handleSchedule(chatId);
+  if (data === 'cmd_mybooking') return await handleMyBooking(chatId);
+  if (data === 'cmd_cancel') return await handleCancel(chatId);
+
   const classId = data.replace('book_', '');
   const s = schedule.find(x => x.id === classId);
   if (!s) return;
@@ -130,6 +143,7 @@ async function handleCallback(chatId, data) {
     }
   }
 }
+
 
 // Webhook
 app.post(WEBHOOK_PATH, async (req, res) => {
