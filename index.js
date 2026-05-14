@@ -66,14 +66,15 @@ async function handleStart(chatId) {
 
 // /book
 async function handleBook(chatId) {
-  const buttons = {
-    inline_keyboard: schedule.map(s => ([{
-      text: `${s.day} ${s.time} — ${s.type}`,
-      callback_data: `book_${s.id}`,
-    }]))
-  };
-  await sendMessage(chatId, '📅 Выбери занятие:', buttons);
+    const buttons = {
+        inline_keyboard: schedule.map(s => ([{
+            text: `${s.day} ${s.time} – ${s.type}`,
+            callback_data: `book_${s.id}`,
+        }]))
+    };
+    await sendMessage(chatId, 'Выбери занятие:', buttons);
 }
+
 
 // /schedule
 async function handleSchedule(chatId) {
@@ -83,19 +84,25 @@ async function handleSchedule(chatId) {
 
 // /mybooking
 async function handleMyBooking(chatId) {
-  const booking = await db.collection('bookings').findOne({ chatId });
+    const booking = await db.collection('bookings').findOne({ chatId });
+    
+    if (!booking) {
+        const buttons = {
+            inline_keyboard: [
+                [{ text: '📝 Записаться', callback_data: 'cmd_book' }]
+            ]
+        };
+        return await sendMessage(chatId, 'У тебя нет активной записи.', buttons);
+    }
 
-  if (!booking) {
     const buttons = {
-      inline_keyboard: [
-        [{ text: '📅 Записаться', callback_data: 'cmd_book' }]
-      ]
+        inline_keyboard: [
+            [{ text: '❌ Отменить запись', callback_data: 'cmd_cancel' }]
+        ]
     };
-    return await sendMessage(chatId, 'У тебя нет активной записи.', buttons);
-  }
-
-  await sendMessage(chatId, `✅ Твоя запись:\n${booking.day} ${booking.time} — ${booking.className}\n\nОтменить: /cancel`);
+    await sendMessage(chatId, `✅ Твоя запись:\n${booking.day} ${booking.time} — ${booking.className}`, buttons);
 }
+
 
 
 // /cancel
