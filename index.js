@@ -5,136 +5,170 @@ const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
+const WEBHOOK_PATH = `/webhook/${BOT_TOKEN}`;
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-const bookings = {};
-const SLOTS = ['10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00'];
+// Временное хранение записей (память)
+const bookings = [];
 
-function getDates() {
-  const dates = [];
-  const now = new Date();
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(now);
-    d.setDate(d.getDate() + i);
-    dates.push(d.toISOString().split('T')[0]);
-  }
-  return dates;
+// Расписание
+const schedule = [
+  { id: 'mon_18', day: 'Понедельник', time: '18:00', type: 'Pole Dance', spots: 6 },
+  { id: 'mon_19', day: 'Понедельник', time: '19:30', type: 'Stretching', spots: 8 },
+  { id: 'wed_18', day: 'Среда', time: '18:00', type: 'Pole Dance', spots: 6 },
+  { id: 'wed_19', day: 'Среда', time: '19:30', type: 'Exotic', spots: 6 },
+  { id: 'fri_18', day: 'Пятница', time: '18:00', type: 'Pole Dance', spots: 6 },
+  { id: 'fri_19', day: 'Пятница', time: '19:30', type: 'Stretching', spots: 8 },
+];
+
+function sendMessage(chatId, text, keyboard) {
+  const data = { chat_id: chatId, text, parse_mode: 'HTML' };
+  if (keyboard) data.reply_markup = keyboard;
+  return axios.post(`${API}/sendMessage`, data);
 }
 
-function formatDate(dateStr) {
-  const d = new Date(dateStr + 'T00:00:00');
-  const days = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
-  const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
-  return `${d.getDate()} ${months[d.getMonth()]} (${days[d.getDay()]})`;
-}
-
-async function sendMessage(chatId, text, keyboard) {
-  await axios.post(`${API}/sendMessage`, {
-    chat_id: chatId,
-    text: text,
-    parse_mode: 'HTML',
-    reply_markup: keyboard || undefined
+function answerCallback(callbackQueryId, text = '') {
+  return axios.post(`${API}/answerCallbackQuery`, {
+    callback_query_id: callbackQueryId,
+    text,
   });
 }
 
-async function handleStart(chatId) {
+// /start
+function handleStart(msg) {
   const keyboard = {
     inline_keyboard: [
       [{ text: '📅 Записаться', callback_data: 'book' }],
-      [{ text: '📋 Мои записи', callback_data: 'my_bookings' }],
-      [{ text: '🗓 Расписание', callback_data: 'schedule' }]
-    ]
+      [{ text: '📋 Расписание', callback_data: 'schedule' }],
+      [{ text: 'ℹ️ О нас', callback_data: 'about' }],
+    ],
   };
-  await sendMessage(chatId, '👋 Привет! Я бот для записи.\n\nВыбери действие:', keyboard);
+  return sendMessage(
+    msg.chat.id,
+    '🐱 Привет! Я — бот <b>CatPaws.Dance</b>\n\nЗапишись на занятие или посмотри расписание 👇',
+    keyboard
+  );
 }
 
-async function handleBook(chatId) {
-  const dates = getDates();
-  const keyboard = {
-    inline_keyboard: dates.map(d => ([{ text: formatDate(d), callback_data: `date_${d}` }]))
-  };
-  await sendMessage(chatId, 'Выбери дату:', keyboard);
+// /book — показываем расписание для записи
+function handleBook(msg) {
+  const buttons = schedule.map((s) => [
+    { text: `${s.day} ${s.time} — ${s.type}`, callback_data: `select_${s.id}` },
+  ]);
+  const keyboard = { inline_keyboard: buttons };
+  return sendMessage(msg.chat.id, 'Выбери занятие для записи:', keyboard);
 }
 
-async function handleDateSelect(chatId, date) {
-  const taken = bookings[date] || [];
-  const available = SLOTS.filter(s => !taken.includes(s));
-  if (available.length === 0) {
-    await sendMessage(chatId, `На ${formatDate(date)} все слоты заняты 😔`);
-    return;
+// /schedule — показать расписание
+function handleSchedule(msg) {
+  const lines = schedule.map(
+    (s) => `• <b>${s.day}</b> ${s.time} — ${s.type} (мест: ${s.spots})`
+  );
+  return sendMessage(msg.chat.id, `📋 Расписание:\n\n${lines.join('\n')}`);
+}
+
+// Обработка callback-кнопок
+async function handleCallback(callbackQuery) {
+  const chatId = callbackQuery.message.chat.id;
+  const data = callbackQuery.data;
+
+  if (data === 'book') {
+    const buttons = schedule.map((s) => [
+      { text: `${s.day} ${s.time} — ${s.type}`, callback_data: `select_${s.id}` },
+    ]);
+    const keyboard = { inline_keyboard: buttons };
+    await sendMessage(chatId, 'Выбери занятие для записи:', keyboard);
+    return answerCallback(callbackQuery.id);
   }
-  const keyboard = {
-    inline_keyboard: available.map(s => ([{ text: s, callback_data: `time_${date}_${s}` }]))
-  };
-  await sendMessage(chatId, `Свободные слоты на ${formatDate(date)}:`, keyboard);
+
+  if (data === 'schedule') {
+    const lines = schedule.map(
+      (s) => `• <b>${s.day}</b> ${s.time} — ${s.type} (мест: ${s.spots})`
+    );
+    await sendMessage(chatId, `📋 Расписание:\n\n${lines.join('\n')}`);
+    return answerCallback(callbackQuery.id);
+  }
+
+  if (data === 'about') {
+    await sendMessage(
+      chatId,
+      '🐱 <b>CatPaws.Dance</b>\n\nPole Dance, Exotic, Stretching\nЗапись через бота или в канале 👇'
+    );
+    return answerCallback(callbackQuery.id);
+  }
+
+  // Выбор занятия — подтверждение
+  if (data.startsWith('select_')) {
+    const slotId = data.replace('select_', '');
+    const slot = schedule.find((s) => s.id === slotId);
+    if (!slot) return answerCallback(callbackQuery.id, 'Занятие не найдено');
+
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '✅ Подтвердить запись', callback_data: `confirm_${slotId}` }],
+        [{ text: '← Назад', callback_data: 'book' }],
+      ],
+    };
+    await sendMessage(
+      chatId,
+      `Ты выбрал:\n\n<b>${slot.day} ${slot.time} — ${slot.type}</b>\nМест: ${slot.spots}\n\nПодтверждаешь?`,
+      keyboard
+    );
+    return answerCallback(callbackQuery.id);
+  }
+
+  // Подтверждение записи
+  if (data.startsWith('confirm_')) {
+    const slotId = data.replace('confirm_', '');
+    const slot = schedule.find((s) => s.id === slotId);
+    if (!slot) return answerCallback(callbackQuery.id, 'Занятие не найдено');
+
+    const userId = callbackQuery.from.id;
+    const existing = bookings.find((b) => b.userId === userId && b.slotId === slotId);
+    if (existing) {
+      await sendMessage(chatId, 'Ты уже записан на это занятие! 😼');
+      return answerCallback(callbackQuery.id);
+    }
+
+    bookings.push({ userId, slotId, name: callbackQuery.from.first_name });
+    await sendMessage(
+      chatId,
+      `✅ Записан!\n\n<b>${slot.day} ${slot.time} — ${slot.type}</b>\nДо встречи на занятии! 🐱`
+    );
+    return answerCallback(callbackQuery.id, 'Записано!');
+  }
 }
 
-async function handleTimeSelect(chatId, date, time) {
-  if (!bookings[date]) bookings[date] = [];
-  bookings[date].push(time);
-  await sendMessage(chatId, `✅ Записано!\n📅 ${formatDate(date)}\n🕐 ${time}\n\nЖду тебя!`);
-}
+// Webhook endpoint
+app.post(WEBHOOK_PATH, async (req, res) => {
+  const update = req.body;
 
-async function handleMyBookings(chatId) {
-  const dates = getDates();
-  let text = '📋 Твои записи:\n\n';
-  let found = false;
-  for (const date of dates) {
-    const taken = bookings[date] || [];
-    if (taken.length > 0) {
-      found = true;
-      text += `<b>${formatDate(date)}</b>: ${taken.join(', ')}\n`;
+  if (update.message) {
+    const msg = update.message;
+    const text = msg.text || '';
+
+    if (text === '/start') {
+      await handleStart(msg);
+    } else if (text === '/book') {
+      await handleBook(msg);
+    } else if (text === '/schedule') {
+      await handleSchedule(msg);
     }
   }
-  if (!found) text += 'Пока записей нет';
-  await sendMessage(chatId, text);
-}
 
-async function handleSchedule(chatId) {
-  const dates = getDates();
-  let text = '🗓 Расписание на неделю:\n\n';
-  for (const date of dates) {
-    const taken = bookings[date] || [];
-    const available = SLOTS.filter(s => !taken.includes(s));
-    text += `<b>${formatDate(date)}</b>\n`;
-    if (taken.length > 0) {
-      text += `  ❌ Занято: ${taken.join(', ')}\n  ✅ Свободно: ${available.join(', ')}\n\n`;
-    } else {
-      text += `  ✅ Все слоты свободны\n\n`;
-    }
+  if (update.callback_query) {
+    await handleCallback(update.callback_query);
   }
-  await sendMessage(chatId, text);
-}
 
-app.post(`/webhook/${BOT_TOKEN}`, async (req, res) => {
-  const { message, callback_query } = req.body;
-  try {
-    if (message && message.text && message.text.startsWith('/start')) {
-      await handleStart(message.chat.id);
-    } else if (message && message.text && message.text.startsWith('/book')) {
-      await handleBook(message.chat.id);
-    } else if (message && message.text && message.text.startsWith('/schedule')) {
-      await handleSchedule(message.chat.id);
-    }
-    if (callback_query) {
-      const chatId = callback_query.message.chat.id;
-      const data = callback_query.data;
-      await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: callback_query.id });
-      if (data === 'book') await handleBook(chatId);
-      else if (data === 'my_bookings') await handleMyBookings(chatId);
-      else if (data === 'schedule') await handleSchedule(chatId);
-      else if (data.startsWith('date_')) await handleDateSelect(chatId, data.slice(5));
-      else if (data.startsWith('time_')) {
-        const parts = data.split('_');
-        await handleTimeSelect(chatId, parts[1], parts[2]);
-      }
-    }
-  } catch (err) {
-    console.error('Error:', err.message);
-  }
   res.sendStatus(200);
 });
 
+// Health check
+app.get('/', (req, res) => {
+  res.send('CatPaws.Dance bot is running!');
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Bot running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Bot running on port ${PORT}`);
+});
