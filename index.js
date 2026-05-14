@@ -134,6 +134,13 @@ async function handleCallback(chatId, data, callbackQueryId) {
     const s = schedule.find(x => x.id === classId);
     if (!s) return;
 
+    const menuButtons = {
+        inline_keyboard: [
+            [{ text: '✅ Моя запись', callback_data: 'cmd_mybooking' }],
+            [{ text: '❌ Отменить запись', callback_data: 'cmd_cancel' }]
+        ]
+    };
+
     try {
         await db.collection('bookings').insertOne({
             chatId,
@@ -144,10 +151,11 @@ async function handleCallback(chatId, data, callbackQueryId) {
             bookedAt: new Date(),
         });
         await answerCallback(callbackQueryId, '✅ Запись произведена!');
-        await sendMessage(chatId, `✅ Запись произведена!\n${s.day} ${s.time} — ${s.type}\n\nОтменить: /cancel\nПроверить: /mybooking`);
+        await sendMessage(chatId, `✅ Запись произведена!\n${s.day} ${s.time} — ${s.type}`, menuButtons);
     } catch (err) {
         if (err.code === 11000) {
             await answerCallback(callbackQueryId, 'Ты уже записан(а)!');
+            await sendMessage(chatId, 'Ты уже записан(а) на это занятие.', menuButtons);
         } else {
             console.error('Ошибка записи:', err);
             await answerCallback(callbackQueryId, 'Ошибка. Попробуй позже.');
@@ -172,11 +180,12 @@ app.post(WEBHOOK_PATH, async (req, res) => {
       else if (msg.text === '/mybooking') await handleMyBooking(chatId);
       else if (msg.text === '/cancel') await handleCancel(chatId);
     }
-    if (cb) {
+if (cb) {
     const chatId = cb.message.chat.id;
     const callbackQueryId = cb.id;
     await handleCallback(chatId, cb.data, callbackQueryId);
 }
+
 
   } catch (err) {
     console.error('Webhook error:', err);
