@@ -1,22 +1,38 @@
 import express from 'express';
 import axios from 'axios';
+import { MongoClient } from 'mongodb';
 
 const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const MONGODB_URI = process.env.MONGODB_URI;
 const WEBHOOK_PATH = `/webhook/${BOT_TOKEN}`;
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// Временное хранение записей (память)
-const bookings = [];
+// MongoDB подключение
+let db;
+const client = new MongoClient(MONGODB_URI);
+
+async function connectDB() {
+  try {
+    await client.connect();
+    db = client.db('pole_dance');
+    // Уникальный индекс — одна запись на человека
+    await db.collection('bookings').createIndex({ chatId: 1 }, { unique: true });
+    console.log('✅ MongoDB подключена');
+  } catch (err) {
+    console.error('❌ Ошибка MongoDB:', err);
+  }
+}
+connectDB();
 
 // Расписание
 const schedule = [
   { id: 'mon_18', day: 'Понедельник', time: '18:00', type: 'Pole Dance', spots: 6 },
   { id: 'mon_19', day: 'Понедельник', time: '19:30', type: 'Stretching', spots: 8 },
   { id: 'wed_18', day: 'Среда', time: '18:00', type: 'Pole Dance', spots: 6 },
-  { id: 'wed_19', day: 'Среда', time: '19:30', type: 'Exotic', spots: 6 },
+  { id: 'wed_19', day: 'Среда', time: '19:30', type: 'Exotic', spots: 5 },
   { id: 'fri_18', day: 'Пятница', time: '18:00', type: 'Pole Dance', spots: 6 },
   { id: 'fri_19', day: 'Пятница', time: '19:30', type: 'Stretching', spots: 8 },
 ];
@@ -35,140 +51,110 @@ function answerCallback(callbackQueryId, text = '') {
 }
 
 // /start
-function handleStart(msg) {
-  const keyboard = {
-    inline_keyboard: [
-      [{ text: '📅 Записаться', callback_data: 'book' }],
-      [{ text: '📋 Расписание', callback_data: 'schedule' }],
-      [{ text: 'ℹ️ О нас', callback_data: 'about' }],
-    ],
+async function handleStart(chatId) {
+  const text = `👋 Привет! Я бот для записи на занятия pole dance.\n\nВыбери команду:\n/book — записаться\n/schedule — расписание\n/mybooking — моя запись\n/cancel — отменить запись`;
+  await sendMessage(chatId, text);
+}
+
+// /book
+async function handleBook(chatId) {
+  const buttons = {
+    inline_keyboard: schedule.map(s => ([{
+      text: `${s.day} ${s.time} — ${s.type}`,
+      callback_data: `book_${s.id}`,
+    }]))
   };
-  return sendMessage(
-    msg.chat.id,
-    '🐱 Привет! Я — бот <b>CatPaws.Dance</b>\n\nЗапишись на занятие или посмотри расписание 👇',
-    keyboard
-  );
+  await sendMessage(chatId, '📅 Выбери занятие:', buttons);
 }
 
-// /book — показываем расписание для записи
-function handleBook(msg) {
-  const buttons = schedule.map((s) => [
-    { text: `${s.day} ${s.time} — ${s.type}`, callback_data: `select_${s.id}` },
-  ]);
-  const keyboard = { inline_keyboard: buttons };
-  return sendMessage(msg.chat.id, 'Выбери занятие для записи:', keyboard);
+// /schedule
+async function handleSchedule(chatId) {
+  const lines = schedule.map(s => `• ${s.day} ${s.time} — ${s.type} (${s.spots} мест)`);
+  await sendMessage(chatId, `📋 Расписание:\n\n${lines.join('\n')}`);
 }
 
-// /schedule — показать расписание
-function handleSchedule(msg) {
-  const lines = schedule.map(
-    (s) => `• <b>${s.day}</b> ${s.time} — ${s.type} (мест: ${s.spots})`
-  );
-  return sendMessage(msg.chat.id, `📋 Расписание:\n\n${lines.join('\n')}`);
-}
-
-// Обработка callback-кнопок
-async function handleCallback(callbackQuery) {
-  const chatId = callbackQuery.message.chat.id;
-  const data = callbackQuery.data;
-
-  if (data === 'book') {
-    const buttons = schedule.map((s) => [
-      { text: `${s.day} ${s.time} — ${s.type}`, callback_data: `select_${s.id}` },
-    ]);
-    const keyboard = { inline_keyboard: buttons };
-    await sendMessage(chatId, 'Выбери занятие для записи:', keyboard);
-    return answerCallback(callbackQuery.id);
-  }
-
-  if (data === 'schedule') {
-    const lines = schedule.map(
-      (s) => `• <b>${s.day}</b> ${s.time} — ${s.type} (мест: ${s.spots})`
-    );
-    await sendMessage(chatId, `📋 Расписание:\n\n${lines.join('\n')}`);
-    return answerCallback(callbackQuery.id);
-  }
-
-  if (data === 'about') {
-    await sendMessage(
-      chatId,
-      '🐱 <b>CatPaws.Dance</b>\n\nPole Dance, Exotic, Stretching\nЗапись через бота или в канале 👇'
-    );
-    return answerCallback(callbackQuery.id);
-  }
-
-  // Выбор занятия — подтверждение
-  if (data.startsWith('select_')) {
-    const slotId = data.replace('select_', '');
-    const slot = schedule.find((s) => s.id === slotId);
-    if (!slot) return answerCallback(callbackQuery.id, 'Занятие не найдено');
-
-    const keyboard = {
-      inline_keyboard: [
-        [{ text: '✅ Подтвердить запись', callback_data: `confirm_${slotId}` }],
-        [{ text: '← Назад', callback_data: 'book' }],
-      ],
-    };
-    await sendMessage(
-      chatId,
-      `Ты выбрал:\n\n<b>${slot.day} ${slot.time} — ${slot.type}</b>\nМест: ${slot.spots}\n\nПодтверждаешь?`,
-      keyboard
-    );
-    return answerCallback(callbackQuery.id);
-  }
-
-  // Подтверждение записи
-  if (data.startsWith('confirm_')) {
-    const slotId = data.replace('confirm_', '');
-    const slot = schedule.find((s) => s.id === slotId);
-    if (!slot) return answerCallback(callbackQuery.id, 'Занятие не найдено');
-
-    const userId = callbackQuery.from.id;
-    const existing = bookings.find((b) => b.userId === userId && b.slotId === slotId);
-    if (existing) {
-      await sendMessage(chatId, 'Ты уже записан на это занятие! 😼');
-      return answerCallback(callbackQuery.id);
+// /mybooking
+async function handleMyBooking(chatId) {
+  try {
+    const booking = await db.collection('bookings').findOne({ chatId });
+    if (!booking) {
+      await sendMessage(chatId, 'У тебя нет активной записи. Запишись через /book');
+      return;
     }
-
-    bookings.push({ userId, slotId, name: callbackQuery.from.first_name });
-    await sendMessage(
-      chatId,
-      `✅ Записан!\n\n<b>${slot.day} ${slot.time} — ${slot.type}</b>\nДо встречи на занятии! 🐱`
-    );
-    return answerCallback(callbackQuery.id, 'Записано!');
+    const s = schedule.find(x => x.id === booking.classId);
+    await sendMessage(chatId, `✅ Ты записан(а): ${s.day} ${s.time} — ${s.type}`);
+  } catch (err) {
+    console.error('Ошибка mybooking:', err);
+    await sendMessage(chatId, 'Ошибка при проверке записи. Попробуй позже.');
   }
 }
 
-// Webhook endpoint
+// /cancel
+async function handleCancel(chatId) {
+  try {
+    const result = await db.collection('bookings').deleteOne({ chatId });
+    if (result.deletedCount === 0) {
+      await sendMessage(chatId, 'У тебя нет активной записи.');
+    } else {
+      await sendMessage(chatId, '❌ Запись отменена.');
+    }
+  } catch (err) {
+    console.error('Ошибка cancel:', err);
+    await sendMessage(chatId, 'Ошибка при отмене. Попробуй позже.');
+  }
+}
+
+// Обработка кнопок записи
+async function handleCallback(chatId, data) {
+  const classId = data.replace('book_', '');
+  const s = schedule.find(x => x.id === classId);
+  if (!s) return;
+
+  try {
+    await db.collection('bookings').insertOne({
+      chatId,
+      classId,
+      className: s.type,
+      day: s.day,
+      time: s.time,
+      bookedAt: new Date(),
+    });
+    await answerCallback(chatId, `✅ Записан(а) на ${s.type}!`);
+    await sendMessage(chatId, `✅ Ты записан(а) на ${s.day} ${s.time} — ${s.type}\n\nОтменить: /cancel\nПроверить: /mybooking`);
+  } catch (err) {
+    if (err.code === 11000) {
+      await answerCallback(chatId, 'Ты уже записан(а)! Отмени текущую через /cancel');
+    } else {
+      console.error('Ошибка записи:', err);
+      await answerCallback(chatId, 'Ошибка при записи. Попробуй позже.');
+    }
+  }
+}
+
+// Webhook
 app.post(WEBHOOK_PATH, async (req, res) => {
   const update = req.body;
+  const msg = update.message;
+  const cb = update.callback_query;
 
-  if (update.message) {
-    const msg = update.message;
-    const text = msg.text || '';
-
-    if (text === '/start') {
-      await handleStart(msg);
-    } else if (text === '/book') {
-      await handleBook(msg);
-    } else if (text === '/schedule') {
-      await handleSchedule(msg);
+  try {
+    if (msg?.text) {
+      const chatId = msg.chat.id;
+      if (msg.text === '/start') await handleStart(chatId);
+      else if (msg.text === '/book') await handleBook(chatId);
+      else if (msg.text === '/schedule') await handleSchedule(chatId);
+      else if (msg.text === '/mybooking') await handleMyBooking(chatId);
+      else if (msg.text === '/cancel') await handleCancel(chatId);
     }
-  }
-
-  if (update.callback_query) {
-    await handleCallback(update.callback_query);
+    if (cb) {
+      await handleCallback(cb.from.id, cb.data);
+    }
+  } catch (err) {
+    console.error('Webhook error:', err);
   }
 
   res.sendStatus(200);
 });
 
-// Health check
-app.get('/', (req, res) => {
-  res.send('CatPaws.Dance bot is running!');
-});
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Bot running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
