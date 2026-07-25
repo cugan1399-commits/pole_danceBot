@@ -99,6 +99,92 @@
   }
   button.cancel-btn { background: var(--accent-danger); color: #fff; }
   .empty { color: var(--text-secondary); text-align: center; margin-top: 40px; }
+
+  .tabbar { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 16px; padding-bottom: 4px; }
+  .tab-btn {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--border-soft);
+    color: var(--text-secondary);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .tab-btn.active { background: var(--accent-pink); border-color: var(--accent-pink); color: #fff; }
+
+  .admin-form { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .admin-form input {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .primary-btn {
+    background: var(--accent-pink);
+    border: none;
+    color: #fff;
+    border-radius: 8px;
+    padding: 10px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .wizard-step-label { color: var(--text-secondary); font-size: 13px; margin: 0 0 10px; }
+  .wizard-options { display: flex; flex-wrap: wrap; gap: 8px; }
+  .wizard-opt {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .wizard-opt:disabled { opacity: 0.3; cursor: not-allowed; }
+  .wizard-back { margin-bottom: 12px; background: transparent; border: none; color: var(--text-secondary); font-size: 13px; font-family: inherit; cursor: pointer; padding: 0; }
+
+  .cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .cal-header span { font-weight: 500; }
+  .cal-header button {
+    background: transparent;
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    border-radius: 8px;
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; color: var(--text-secondary); font-size: 12px; margin-bottom: 6px; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; touch-action: pan-y; }
+  .cal-cell {
+    aspect-ratio: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    background: var(--bg-card);
+  }
+  .cal-cell.other-month { opacity: 0.25; cursor: default; }
+  .cal-cell.today { border: 1px solid var(--accent-pink); }
+  .cal-cell.selected { background: var(--accent-pink); color: #fff; }
+  .cal-agenda-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-top: 8px;
+    font-size: 13px;
+  }
 </style>
 </head>
 <body>
@@ -106,12 +192,54 @@
 <div class="app-header"></div>
 
 <div class="app-shell">
-  <h1>Запись на занятия</h1>
+  <div class="tabbar" id="tabbar">
+    <button class="tab-btn active" data-tab="schedule" onclick="switchTab('schedule')">Расписание</button>
+  </div>
 
-  <div id="myBookingBlock" class="status-card" style="display:none;"></div>
+  <div id="tab-schedule" class="tab-panel">
+    <h1>Запись на занятия</h1>
 
-  <div id="classList" class="class-list"></div>
-  <div id="loading" class="empty">Загрузка...</div>
+    <div id="myBookingBlock" class="status-card" style="display:none;"></div>
+
+    <div id="classList" class="class-list"></div>
+    <div id="loading" class="empty">Загрузка...</div>
+  </div>
+
+  <div id="tab-trainers" class="tab-panel" style="display:none">
+    <h1>Тренеры</h1>
+    <div id="trainersList" class="class-list"></div>
+    <div class="admin-form">
+      <input id="trainerIdInput" placeholder="Telegram ID тренера">
+      <input id="trainerNameInput" placeholder="Имя тренера">
+      <button class="primary-btn" onclick="addTrainer()">Добавить тренера</button>
+    </div>
+  </div>
+
+  <div id="tab-directions" class="tab-panel" style="display:none">
+    <h1>Направления</h1>
+    <div id="directionsList" class="class-list"></div>
+    <div class="admin-form">
+      <input id="directionNameInput" placeholder="Название направления">
+      <button class="primary-btn" onclick="addDirection()">Добавить</button>
+    </div>
+  </div>
+
+  <div id="tab-classes" class="tab-panel" style="display:none">
+    <h1>Добавить занятие</h1>
+    <div id="classWizard"></div>
+  </div>
+
+  <div id="tab-calendar" class="tab-panel" style="display:none">
+    <h1>Календарь</h1>
+    <div class="cal-header">
+      <button onclick="calPrevMonth()">‹</button>
+      <span id="calMonthLabel"></span>
+      <button onclick="calNextMonth()">›</button>
+    </div>
+    <div class="cal-weekdays"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div>
+    <div class="cal-grid" id="calGrid"></div>
+    <div id="calAgenda"></div>
+  </div>
 </div>
 
 <script>
@@ -201,7 +329,316 @@ async function cancelBooking() {
   }
 }
 
-loadData();
+// ===================== Админ-режим: вкладки, тренеры, направления, занятия, календарь =====================
+let isAdmin = false;
+
+async function initApp() {
+  loadData();
+  try {
+    const me = await fetch('/api/me?initData=' + encodeURIComponent(initData)).then(r => r.json());
+    isAdmin = !!me.isAdmin;
+  } catch (e) {
+    isAdmin = false;
+  }
+  if (isAdmin) buildAdminTabs();
+}
+
+function buildAdminTabs() {
+  const bar = document.getElementById('tabbar');
+  const tabs = [
+    { id: 'trainers', label: 'Тренеры' },
+    { id: 'directions', label: 'Направления' },
+    { id: 'classes', label: 'Занятия' },
+    { id: 'calendar', label: 'Календарь' },
+  ];
+  tabs.forEach(t => {
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn';
+    btn.dataset.tab = t.id;
+    btn.textContent = t.label;
+    btn.onclick = () => switchTab(t.id);
+    bar.appendChild(btn);
+  });
+}
+
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
+  document.getElementById('tab-' + tabId).style.display = 'block';
+  if (tabId === 'trainers') loadTrainers();
+  else if (tabId === 'directions') loadDirections();
+  else if (tabId === 'classes') startClassWizard();
+  else if (tabId === 'calendar') initCalendar();
+}
+
+// ---------- Тренеры ----------
+async function loadTrainers() {
+  const list = await fetch('/api/admin/trainers?initData=' + encodeURIComponent(initData)).then(r => r.json());
+  const el = document.getElementById('trainersList');
+  el.innerHTML = list.length
+    ? list.map(t => `
+        <div class="class-item">
+          <div class="info">
+            <div class="day-time">${t.name}</div>
+            <div class="type">ID: ${t.telegramId}</div>
+          </div>
+        </div>
+      `).join('')
+    : '<div class="empty" style="margin-top:0">Пока нет тренеров</div>';
+}
+
+async function addTrainer() {
+  const telegramId = document.getElementById('trainerIdInput').value.trim();
+  const name = document.getElementById('trainerNameInput').value.trim();
+  if (!telegramId || !name) return tg.showAlert('Заполни оба поля.');
+
+  const res = await fetch('/api/admin/trainers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, telegramId, name })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    document.getElementById('trainerIdInput').value = '';
+    document.getElementById('trainerNameInput').value = '';
+    tg.HapticFeedback.notificationOccurred('success');
+    loadTrainers();
+  } else {
+    tg.showAlert(data.error === 'already_exists' ? 'Тренер с таким ID уже есть.' : 'Не получилось сохранить.');
+  }
+}
+
+// ---------- Направления ----------
+async function loadDirections() {
+  const list = await fetch('/api/directions').then(r => r.json());
+  const el = document.getElementById('directionsList');
+  el.innerHTML = list.length
+    ? list.map(name => `
+        <div class="class-item">
+          <div class="info"><div class="day-time">${name}</div></div>
+        </div>
+      `).join('')
+    : '<div class="empty" style="margin-top:0">Пока нет направлений</div>';
+}
+
+async function addDirection() {
+  const name = document.getElementById('directionNameInput').value.trim();
+  if (!name) return tg.showAlert('Введи название направления.');
+
+  const res = await fetch('/api/admin/directions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, name })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    document.getElementById('directionNameInput').value = '';
+    tg.HapticFeedback.notificationOccurred('success');
+    loadDirections();
+  } else {
+    tg.showAlert(data.error === 'already_exists' ? 'Такое направление уже есть.' : 'Не получилось сохранить.');
+  }
+}
+
+// ---------- Мастер добавления занятия ----------
+const WEEKDAYS = [
+  ['mon', 'Понедельник'], ['tue', 'Вторник'], ['wed', 'Среда'],
+  ['thu', 'Четверг'], ['fri', 'Пятница'], ['sat', 'Суббота'], ['sun', 'Воскресенье'],
+];
+const WORK_HOURS = [];
+for (let h = 9; h <= 20; h++) WORK_HOURS.push(String(h).padStart(2, '0') + ':00');
+
+function dayLabel(key) {
+  const found = WEEKDAYS.find(([k]) => k === key);
+  return found ? found[1] : key;
+}
+
+let wizardState = {};
+
+function startClassWizard() {
+  wizardState = { day: null, time: null, room: null, direction: null, trainerId: null };
+  renderWizard();
+}
+
+function wizardBack() {
+  if (wizardState.trainerId) wizardState.trainerId = null;
+  else if (wizardState.direction) wizardState.direction = null;
+  else if (wizardState.room) wizardState.room = null;
+  else if (wizardState.time) wizardState.time = null;
+  else if (wizardState.day) wizardState.day = null;
+  renderWizard();
+}
+
+function backButtonHtml() {
+  return wizardState.day ? '<button class="wizard-back" onclick="wizardBack()">← назад</button>' : '';
+}
+
+async function renderWizard() {
+  const el = document.getElementById('classWizard');
+
+  if (!wizardState.day) {
+    el.innerHTML = '<div class="wizard-step-label">Выбери день недели</div><div class="wizard-options">' +
+      WEEKDAYS.map(([k, l]) => `<button class="wizard-opt" onclick="pickDay('${k}')">${l}</button>`).join('') +
+      '</div>';
+    return;
+  }
+
+  if (!wizardState.time) {
+    const classes = await fetch('/api/admin/classes?initData=' + encodeURIComponent(initData) + '&day=' + wizardState.day).then(r => r.json());
+    const busyHours = new Set(classes.map(c => c.time));
+    el.innerHTML = backButtonHtml() +
+      `<div class="wizard-step-label">${dayLabel(wizardState.day)} — выбери время</div><div class="wizard-options">` +
+      WORK_HOURS.map(h => `<button class="wizard-opt" ${busyHours.has(h) ? 'disabled' : ''} onclick="pickTime('${h}')">${h}${busyHours.has(h) ? ' (занято)' : ''}</button>`).join('') +
+      '</div>';
+    return;
+  }
+
+  if (!wizardState.room) {
+    const classes = await fetch('/api/admin/classes?initData=' + encodeURIComponent(initData) + '&day=' + wizardState.day).then(r => r.json());
+    const busyRooms = new Set(classes.filter(c => c.time === wizardState.time).map(c => c.room));
+    el.innerHTML = backButtonHtml() +
+      `<div class="wizard-step-label">${dayLabel(wizardState.day)}, ${wizardState.time} — выбери зал</div><div class="wizard-options">` +
+      [1, 2].map(r => `<button class="wizard-opt" ${busyRooms.has(r) ? 'disabled' : ''} onclick="pickRoom(${r})">Зал ${r}${busyRooms.has(r) ? ' (занят)' : ''}</button>`).join('') +
+      '</div>';
+    return;
+  }
+
+  if (!wizardState.direction) {
+    const directions = await fetch('/api/directions').then(r => r.json());
+    el.innerHTML = backButtonHtml() +
+      `<div class="wizard-step-label">Зал ${wizardState.room} — направление</div><div class="wizard-options">` +
+      directions.map(d => `<button class="wizard-opt" onclick="pickDirection('${d}')">${d}</button>`).join('') +
+      '</div>';
+    return;
+  }
+
+  if (!wizardState.trainerId) {
+    const trainers = await fetch('/api/admin/trainers?initData=' + encodeURIComponent(initData)).then(r => r.json());
+    el.innerHTML = backButtonHtml() +
+      `<div class="wizard-step-label">${wizardState.direction} — кто ведёт?</div><div class="wizard-options">` +
+      trainers.map(t => `<button class="wizard-opt" onclick="pickTrainer(${t.telegramId})">${t.name}</button>`).join('') +
+      '</div>';
+    return;
+  }
+}
+
+function pickDay(k) { wizardState.day = k; renderWizard(); }
+function pickTime(t) { wizardState.time = t; renderWizard(); }
+function pickRoom(r) { wizardState.room = r; renderWizard(); }
+function pickDirection(d) { wizardState.direction = d; renderWizard(); }
+
+async function pickTrainer(id) {
+  wizardState.trainerId = id;
+  const res = await fetch('/api/admin/classes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, ...wizardState })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    tg.HapticFeedback.notificationOccurred('success');
+    tg.showAlert('Занятие создано!');
+    startClassWizard();
+  } else {
+    tg.showAlert(data.error === 'slot_taken' ? 'Этот зал уже занят на это время.' : 'Не получилось сохранить.');
+    wizardState.trainerId = null;
+    renderWizard();
+  }
+}
+
+// ---------- Интерактивный календарь ----------
+const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+let calDate = new Date();
+let calSelectedDate = null;
+
+function initCalendar() {
+  calDate = new Date();
+  calSelectedDate = null;
+  document.getElementById('calAgenda').innerHTML = '';
+  renderCalendarMonth();
+}
+
+function renderCalendarMonth() {
+  document.getElementById('calMonthLabel').textContent = MONTH_NAMES[calDate.getMonth()] + ' ' + calDate.getFullYear();
+  const grid = document.getElementById('calGrid');
+  grid.innerHTML = '';
+
+  const year = calDate.getFullYear();
+  const month = calDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7; // 0 = понедельник
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  for (let i = 0; i < startOffset; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'cal-cell other-month';
+    cell.textContent = daysInPrevMonth - startOffset + i + 1;
+    grid.appendChild(cell);
+  }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const cell = document.createElement('div');
+    cell.className = 'cal-cell';
+    if (dateStr === todayStr) cell.classList.add('today');
+    if (dateStr === calSelectedDate) cell.classList.add('selected');
+    cell.textContent = d;
+    cell.onclick = () => selectCalendarDate(dateStr, cell);
+    grid.appendChild(cell);
+  }
+
+  const totalCells = startOffset + daysInMonth;
+  const trailing = (7 - (totalCells % 7)) % 7;
+  for (let i = 1; i <= trailing; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'cal-cell other-month';
+    cell.textContent = i;
+    grid.appendChild(cell);
+  }
+}
+
+function calPrevMonth() { calDate.setMonth(calDate.getMonth() - 1); renderCalendarMonth(); }
+function calNextMonth() { calDate.setMonth(calDate.getMonth() + 1); renderCalendarMonth(); }
+
+async function selectCalendarDate(dateStr, cellEl) {
+  calSelectedDate = dateStr;
+  document.querySelectorAll('.cal-cell').forEach(c => c.classList.remove('selected'));
+  cellEl.classList.add('selected');
+
+  const agenda = document.getElementById('calAgenda');
+  agenda.innerHTML = '<div class="empty" style="margin-top:12px">Загрузка...</div>';
+
+  const data = await fetch('/api/admin/calendar?initData=' + encodeURIComponent(initData) + '&date=' + dateStr).then(r => r.json());
+  if (!data.classes || !data.classes.length) {
+    agenda.innerHTML = '<div class="empty" style="margin-top:12px">На этот день занятий нет</div>';
+    return;
+  }
+  agenda.innerHTML = data.classes.map(c => `
+    <div class="cal-agenda-item">
+      <div style="font-weight:500">${c.time} — зал ${c.room} — ${c.direction}</div>
+      <div style="color:var(--text-secondary); margin-top:2px">Тренер: ${c.trainerName}</div>
+      <div style="color:var(--text-secondary); margin-top:4px">${c.participants.length ? c.participants.map(p => '@' + p.username).join(', ') : 'пока никто не записан'}</div>
+    </div>
+  `).join('');
+}
+
+// Свайп влево/вправо по сетке календаря — смена месяца
+let calTouchStartX = null;
+document.getElementById('calGrid').addEventListener('touchstart', e => {
+  calTouchStartX = e.touches[0].clientX;
+});
+document.getElementById('calGrid').addEventListener('touchend', e => {
+  if (calTouchStartX === null) return;
+  const dx = e.changedTouches[0].clientX - calTouchStartX;
+  if (Math.abs(dx) > 40) {
+    if (dx < 0) calNextMonth(); else calPrevMonth();
+  }
+  calTouchStartX = null;
+});
+
+initApp();
 </script>
 
 </body>

@@ -27,8 +27,6 @@ for (let h = 9; h <= 20; h++) WORK_HOURS.push(String(h).padStart(2, '0') + ':00'
 
 const ROOMS = [1, 2]; // ← позже можно добавить 3-й зал
 
-const RU_WEEKDAYS = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-
 // MongoDB подключение
 let db;
 const client = new MongoClient(MONGODB_URI);
@@ -43,8 +41,10 @@ async function connectDB() {
     // Новая система: тренеры, направления, занятия
     await db.collection('trainers').createIndex({ telegramId: 1 }, { unique: true });
     await db.collection('directions').createIndex({ name: 1 }, { unique: true });
-    // Не даёт создать два занятия в одном зале в одно и то же время
-    await db.collection('classes').createIndex({ date: 1, time: 1, room: 1 }, { unique: true });
+    // Не даёт создать два занятия в одном зале в одно и то же время (по дням недели, без привязки к дате)
+    await db.collection('classes').createIndex({ day: 1, time: 1, room: 1 }, { unique: true });
+    // Бронирования именно новых занятий (пока не используется в UI, задел на будущее)
+    await db.collection('classBookings').createIndex({ classId: 1, chatId: 1 }, { unique: true });
 
     // Регистрируем главного админа как тренера по умолчанию, если его ещё нет
     await db.collection('trainers').updateOne(
@@ -162,6 +162,147 @@ app.post('/api/cancel', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ===================== API ДЛЯ MINI APP — НОВАЯ СИСТЕМА (тренеры/направления/занятия/календарь) =====================
+// Всё это видно в Mini App только тому, чей Telegram ID совпадает с ADMIN_ID.
+
+function getVerifiedAdmin(initData) {
+  const user = verifyInitData(initData || '');
+  if (!user || user.id !== ADMIN_ID) return null;
+  return user;
+}
+
+// Кто открыл приложение — обычный ученик или админ
+app.get('/api/me', (req, res) => {
+  const user = verifyInitData(req.query.initData || '');
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ id: user.id, username: user.username || null, isAdmin: user.id === ADMIN_ID });
+});
+
+// Список направлений — доступен всем (нужен и для формы создания занятия)
+app.get('/api/directions', async (req, res) => {
+  res.json(await getDirections());
+});
+
+app.post('/api/admin/directions', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name_required' });
+
+  try {
+    await db.collection('directions').insertOne({ name, addedAt: new Date() });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ error: 'already_exists' });
+    console.error('Ошибка добавления направления (API):', err);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+app.get('/api/admin/trainers', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const trainers = await db.collection('trainers').find({}).sort({ addedAt: 1 }).toArray();
+  res.json(trainers);
+});
+
+app.post('/api/admin/trainers', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const telegramId = parseInt(req.body.telegramId, 10);
+  const name = (req.body.name || '').trim();
+  if (!telegramId || !name) return res.status(400).json({ error: 'invalid_input' });
+
+  try {
+    await db.collection('trainers').insertOne({ telegramId, name, addedAt: new Date() });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ error: 'already_exists' });
+    console.error('Ошибка добавления тренера (API):', err);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Список занятий — можно за конкретный день недели (?day=mon) или все сразу
+app.get('/api/admin/classes', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const filter = req.query.day ? { day: req.query.day } : {};
+  const classes = await db.collection('classes').find(filter).sort({ time: 1 }).toArray();
+  res.json(classes);
+});
+
+app.post('/api/admin/classes', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const { day, time, room, direction, trainerId } = req.body;
+  if (!day || !time || !room || !direction || !trainerId) {
+    return res.status(400).json({ error: 'invalid_input' });
+  }
+
+  const trainer = await db.collection('trainers').findOne({ telegramId: Number(trainerId) });
+
+  try {
+    const result = await db.collection('classes').insertOne({
+      day, time, room: Number(room),
+      direction,
+      trainerId: Number(trainerId),
+      trainerName: trainer ? trainer.name : 'Неизвестно',
+      createdAt: new Date(),
+    });
+    res.json({ ok: true, id: result.insertedId });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ error: 'slot_taken' });
+    console.error('Ошибка создания занятия (API):', err);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+app.delete('/api/admin/classes/:id', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  await db.collection('classes').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ ok: true });
+});
+
+// Календарь: по конкретной дате находим день недели и отдаём занятия этого дня недели + участников
+const CALENDAR_WEEKDAY_MAP = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']; // JS getDay(): 0=Вс
+
+app.get('/api/admin/calendar', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const dateStr = req.query.date; // YYYY-MM-DD
+  if (!dateStr) return res.status(400).json({ error: 'date_required' });
+
+  const jsDate = new Date(dateStr + 'T00:00:00');
+  const dayKey = CALENDAR_WEEKDAY_MAP[jsDate.getDay()];
+
+  const classes = await db.collection('classes').find({ day: dayKey }).sort({ time: 1 }).toArray();
+
+  const withParticipants = await Promise.all(classes.map(async (c) => {
+    // Участники подключим сюда, когда ученики начнут бронировать именно новые занятия
+    const participants = await db.collection('classBookings').find({ classId: String(c._id) }).toArray();
+    return { ...c, participants: participants.map(p => ({ username: p.username, chatId: p.chatId })) };
+  }));
+
+  res.json({ date: dateStr, day: dayKey, classes: withParticipants });
+});
+
+app.delete('/api/admin/class-bookings/:id', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  await db.collection('classBookings').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ ok: true });
+});
+
 // ===================== СУЩЕСТВУЮЩАЯ ЛОГИКА БОТА (без изменений) =====================
 
 async function handleStart(chatId) {
@@ -266,18 +407,15 @@ async function handleAdmin(chatId) {
 // Если процесс перезапустится (деплой), незавершённый диалог просто сбросится — не критично.
 const adminSessions = new Map(); // chatId -> { flow: 'add_trainer' | 'add_direction', step, data }
 
-function getNext7Days() {
-  const days = [];
-  const now = new Date();
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(now);
-    d.setDate(now.getDate() + i);
-    const iso = d.toISOString().slice(0, 10);
-    const label = `${RU_WEEKDAYS[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`;
-    days.push({ iso, label });
-  }
-  return days;
-}
+const WEEKDAYS = [
+  { key: 'mon', label: 'Понедельник' },
+  { key: 'tue', label: 'Вторник' },
+  { key: 'wed', label: 'Среда' },
+  { key: 'thu', label: 'Четверг' },
+  { key: 'fri', label: 'Пятница' },
+  { key: 'sat', label: 'Суббота' },
+  { key: 'sun', label: 'Воскресенье' },
+];
 
 // ---------- Добавить тренера ----------
 async function startAddTrainer(chatId) {
@@ -350,74 +488,78 @@ async function getDirections() {
 
 // ---------- Добавить занятие: день → время → зал → направление → тренер ----------
 async function startAddClass(chatId) {
-  const days = getNext7Days();
   const buttons = {
-    inline_keyboard: days.map(d => ([{ text: d.label, callback_data: `ac_day_${d.iso}` }]))
+    inline_keyboard: WEEKDAYS.map(d => ([{ text: d.label, callback_data: `ac_day_${d.key}` }]))
   };
-  await sendMessage(chatId, 'Выбери день для нового занятия:', buttons);
+  await sendMessage(chatId, 'Выбери день недели для нового занятия:', buttons);
 }
 
-async function showTimeStep(chatId, date) {
+async function showTimeStep(chatId, day) {
   // Показываем занятость по каждому часу (если хотя бы один зал занят - помечаем)
-  const existing = await db.collection('classes').find({ date }).toArray();
+  const existing = await db.collection('classes').find({ day }).toArray();
   const busyHours = new Set(existing.map(c => c.time));
 
+  const dayLabel = WEEKDAYS.find(d => d.key === day)?.label || day;
   const buttons = {
     inline_keyboard: WORK_HOURS.map(h => ([{
       text: busyHours.has(h) ? `${h} (частично занято)` : `${h} (свободно)`,
-      callback_data: `ac_time_${date}_${h}`,
+      callback_data: `ac_time_${day}_${h}`,
     }]))
   };
-  await sendMessage(chatId, `Дата: ${date}\nВыбери время:`, buttons);
+  await sendMessage(chatId, `День: ${dayLabel}\nВыбери время:`, buttons);
 }
 
-async function showRoomStep(chatId, date, time) {
-  const existing = await db.collection('classes').find({ date, time }).toArray();
+async function showRoomStep(chatId, day, time) {
+  const existing = await db.collection('classes').find({ day, time }).toArray();
   const busyRooms = new Set(existing.map(c => c.room));
 
+  const dayLabel = WEEKDAYS.find(d => d.key === day)?.label || day;
   const buttons = {
     inline_keyboard: ROOMS.map(r => ([{
       text: busyRooms.has(r) ? `Зал ${r} — занят` : `Зал ${r} — свободен`,
-      callback_data: busyRooms.has(r) ? 'ac_room_busy' : `ac_room_${date}_${time}_${r}`,
+      callback_data: busyRooms.has(r) ? 'ac_room_busy' : `ac_room_${day}_${time}_${r}`,
     }]))
   };
-  await sendMessage(chatId, `Дата: ${date}, время: ${time}\nВыбери зал:`, buttons);
+  await sendMessage(chatId, `День: ${dayLabel}, время: ${time}\nВыбери зал:`, buttons);
 }
 
-async function showDirectionStep(chatId, date, time, room) {
+async function showDirectionStep(chatId, day, time, room) {
   const directions = await getDirections();
+  const dayLabel = WEEKDAYS.find(d => d.key === day)?.label || day;
   const buttons = {
     inline_keyboard: directions.map((name, i) => ([{
       text: name,
-      callback_data: `ac_dir_${date}_${time}_${room}_${i}`,
+      callback_data: `ac_dir_${day}_${time}_${room}_${i}`,
     }]))
   };
-  await sendMessage(chatId, `Дата: ${date}, время: ${time}, зал ${room}\nВыбери направление:`, buttons);
+  await sendMessage(chatId, `День: ${dayLabel}, время: ${time}, зал ${room}\nВыбери направление:`, buttons);
 }
 
-async function showTrainerStep(chatId, date, time, room, directionName) {
+async function showTrainerStep(chatId, day, time, room, directionName) {
   const trainers = await db.collection('trainers').find({}).toArray();
+  const dayLabel = WEEKDAYS.find(d => d.key === day)?.label || day;
   const buttons = {
     inline_keyboard: trainers.map(t => ([{
       text: t.name,
-      callback_data: `ac_confirm_${date}_${time}_${room}_${encodeURIComponent(directionName)}_${t.telegramId}`,
+      callback_data: `ac_confirm_${day}_${time}_${room}_${encodeURIComponent(directionName)}_${t.telegramId}`,
     }]))
   };
-  await sendMessage(chatId, `Дата: ${date}, время: ${time}, зал ${room}, направление: ${directionName}\nКто ведёт?`, buttons);
+  await sendMessage(chatId, `День: ${dayLabel}, время: ${time}, зал ${room}, направление: ${directionName}\nКто ведёт?`, buttons);
 }
 
-async function createClass(chatId, callbackQueryId, date, time, room, directionName, trainerId) {
-  const trainer = await db.collection('trainers').findOne({ telegramId: trainerId });
+async function createClass(chatId, callbackQueryId, day, time, room, directionName, trainerId) {
+  const trainer = await db.collection('trainers').findOne({ telegramId: Number(trainerId) });
+  const dayLabel = WEEKDAYS.find(d => d.key === day)?.label || day;
   try {
     await db.collection('classes').insertOne({
-      date, time, room: Number(room),
+      day, time, room: Number(room),
       direction: directionName,
       trainerId: Number(trainerId),
       trainerName: trainer ? trainer.name : 'Неизвестно',
       createdAt: new Date(),
     });
     await answerCallback(callbackQueryId, '✅ Занятие создано');
-    await sendMessage(chatId, `✅ Занятие создано:\n${date} ${time}, зал ${room}, ${directionName}, тренер: ${trainer ? trainer.name : '—'}`);
+    await sendMessage(chatId, `✅ Занятие создано:\n${dayLabel} ${time}, зал ${room}, ${directionName}, тренер: ${trainer ? trainer.name : '—'}`);
   } catch (err) {
     if (err.code === 11000) {
       await answerCallback(callbackQueryId, 'Этот зал уже занят на это время!');
@@ -431,17 +573,17 @@ async function createClass(chatId, callbackQueryId, date, time, room, directionN
 
 // ---------- Календарь ----------
 async function startCalendar(chatId) {
-  const days = getNext7Days();
   const buttons = {
-    inline_keyboard: days.map(d => ([{ text: d.label, callback_data: `cal_day_${d.iso}` }]))
+    inline_keyboard: WEEKDAYS.map(d => ([{ text: d.label, callback_data: `cal_day_${d.key}` }]))
   };
-  await sendMessage(chatId, 'Какой день посмотреть?', buttons);
+  await sendMessage(chatId, 'Какой день недели посмотреть?', buttons);
 }
 
-async function showDayAgenda(chatId, date) {
-  const classes = await db.collection('classes').find({ date }).sort({ time: 1 }).toArray();
+async function showDayAgenda(chatId, day) {
+  const classes = await db.collection('classes').find({ day }).sort({ time: 1 }).toArray();
+  const dayLabel = WEEKDAYS.find(d => d.key === day)?.label || day;
   if (!classes.length) {
-    return await sendMessage(chatId, `На ${date} занятий пока нет.`);
+    return await sendMessage(chatId, `На ${dayLabel} занятий пока нет.`);
   }
   const buttons = {
     inline_keyboard: classes.map(c => ([{
@@ -449,12 +591,14 @@ async function showDayAgenda(chatId, date) {
       callback_data: `cal_view_${c._id}`,
     }]))
   };
-  await sendMessage(chatId, `Занятия на ${date}:`, buttons);
+  await sendMessage(chatId, `Занятия по ${dayLabel}м:`, buttons);
 }
 
 async function showClassDetail(chatId, classId) {
   const cls = await db.collection('classes').findOne({ _id: new ObjectId(classId) });
   if (!cls) return await sendMessage(chatId, 'Занятие не найдено (возможно, удалено).');
+
+  const dayLabel = WEEKDAYS.find(d => d.key === cls.day)?.label || cls.day;
 
   // Участники пока берутся из старой системы записи по classId старого расписания —
   // для новых занятий это будет подключено на следующем этапе, когда ученики
@@ -465,7 +609,7 @@ async function showClassDetail(chatId, classId) {
     : 'пока никто не записан';
 
   await sendMessage(chatId,
-    `📌 ${cls.date} ${cls.time}, зал ${cls.room}\n` +
+    `📌 ${dayLabel} ${cls.time}, зал ${cls.room}\n` +
     `Направление: ${cls.direction}\n` +
     `Тренер: ${cls.trainerName}\n\n` +
     `Участники:\n${participantsText}`
@@ -531,12 +675,12 @@ async function handleCallback(chatId, data, callbackQueryId, fromUser) {
             return await startAddClass(chatId);
         }
         if (data.startsWith('ac_day_')) {
-            const date = data.replace('ac_day_', '');
+            const day = data.replace('ac_day_', '');
             await answerCallback(callbackQueryId);
-            return await showTimeStep(chatId, date);
+            return await showTimeStep(chatId, day);
         }
         if (data.startsWith('ac_time_')) {
-            // data выглядит как: ac_time_2026-07-28_09:00
+            // data выглядит как: ac_time_mon_09:00
             const rest = data.replace('ac_time_', '');
             const [d, t] = rest.split('_');
             await answerCallback(callbackQueryId);
@@ -569,9 +713,9 @@ async function handleCallback(chatId, data, callbackQueryId, fromUser) {
             return await startCalendar(chatId);
         }
         if (data.startsWith('cal_day_')) {
-            const date = data.replace('cal_day_', '');
+            const day = data.replace('cal_day_', '');
             await answerCallback(callbackQueryId);
-            return await showDayAgenda(chatId, date);
+            return await showDayAgenda(chatId, day);
         }
         if (data.startsWith('cal_view_')) {
             const classId = data.replace('cal_view_', '');
