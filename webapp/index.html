@@ -8,8 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg-base: #0F0B08;
-    --bg-card: #1A1512;
+    --bg-base: #252322;
+    --bg-card: #302E2C;
     --border-soft: rgba(255,255,255,0.08);
     --text-primary: #F5F3F0;
     --text-secondary: #9C948C;
@@ -18,14 +18,16 @@
     --accent-danger: #C0546A;
   }
   * { box-sizing: border-box; }
+  html, body { min-height: 100%; }
   body {
     margin: 0;
     font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background-color: var(--bg-base);
-    background-image: url('wing_left.png'), url('wing_right.png');
-    background-repeat: repeat-y, repeat-y;
-    background-position: left top, right top;
-    background-size: 90px auto, 90px auto;
+    background-image: url('pattern.png');
+    background-repeat: no-repeat;
+    background-position: top center;
+    background-size: cover;
+    background-attachment: fixed;
     color: var(--text-primary);
   }
   .app-shell {
@@ -34,10 +36,11 @@
     padding: 0 16px 24px;
   }
   .app-header {
-    background: url('logo.png') center / cover no-repeat;
-    aspect-ratio: 1165 / 657;
+    background: url('logo.png') center / contain no-repeat;
+    aspect-ratio: 600 / 300;
     width: 100%;
-    margin: 0 0 20px;
+    max-width: 320px;
+    margin: 16px auto 20px;
   }
   h1 {
     font-size: 20px;
