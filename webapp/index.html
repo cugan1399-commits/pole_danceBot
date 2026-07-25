@@ -3,73 +3,114 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pole Dance — Запись</title>
+<title>Feel Me Dance — Запись</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    color-scheme: light dark;
+    --bg-base: #0F0B08;
+    --bg-card: #1A1512;
+    --border-soft: rgba(255,255,255,0.08);
+    --text-primary: #F5F3F0;
+    --text-secondary: #9C948C;
+    --accent-pink: #D4527E;
+    --accent-pink-active: #E85D8C;
+    --accent-danger: #C0546A;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: var(--tg-theme-bg-color, #ffffff);
-    color: var(--tg-theme-text-color, #111111);
-    padding: 16px;
+    font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: var(--bg-base);
+    background-image: url('wing_left.png'), url('wing_right.png');
+    background-repeat: repeat-y, repeat-y;
+    background-position: left top, right top;
+    background-size: 90px auto, 90px auto;
+    color: var(--text-primary);
+  }
+  .app-shell {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 0 16px 24px;
+  }
+  .app-header {
+    background: url('logo.png') center / cover no-repeat;
+    aspect-ratio: 1165 / 657;
+    width: 100%;
+    margin: 0 0 20px;
   }
   h1 {
     font-size: 20px;
+    font-weight: 300;
+    letter-spacing: 0.02em;
     margin: 0 0 16px;
   }
   .status-card {
-    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
     border-radius: 14px;
     padding: 16px;
     margin-bottom: 20px;
   }
-  .status-card p { margin: 0 0 4px; }
-  .status-card .title { font-weight: 600; margin-bottom: 8px; }
+  .status-card p { margin: 0 0 4px; color: var(--text-secondary); }
+  .status-card .title { font-weight: 500; margin-bottom: 8px; color: var(--text-primary); }
   .class-list { display: flex; flex-direction: column; gap: 10px; }
   .class-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
     border-radius: 14px;
     padding: 14px 16px;
   }
   .class-item .info { display: flex; flex-direction: column; }
-  .class-item .day-time { font-weight: 600; }
-  .class-item .type { font-size: 14px; opacity: 0.7; }
-  .class-item .spots { font-size: 13px; opacity: 0.6; margin-top: 2px; }
+  .class-item .day-time { font-weight: 500; }
+  .class-item .type { font-size: 14px; color: var(--text-secondary); }
+  .class-item .spots { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
   button.book-btn, button.cancel-btn {
     border: none;
     border-radius: 10px;
     padding: 8px 14px;
     font-size: 14px;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
+    font-family: inherit;
   }
   button.book-btn {
-    background: var(--tg-theme-button-color, #2481cc);
-    color: var(--tg-theme-button-text-color, #ffffff);
+    background: transparent;
+    border: 1px solid var(--text-secondary);
+    color: var(--text-primary);
+    transition: background .15s ease, border-color .15s ease;
   }
-  button.cancel-btn {
-    background: #e5484d;
-    color: #ffffff;
+  button.book-btn:active, button.book-btn:hover {
+    background: var(--accent-pink-active);
+    border-color: var(--accent-pink-active);
+    color: #fff;
   }
-  button:disabled { opacity: 0.5; cursor: default; }
-  .empty { opacity: 0.6; text-align: center; margin-top: 40px; }
+  button.book-btn:disabled { opacity: 0.4; cursor: default; }
+  button.book-btn.booked {
+    background: var(--accent-pink);
+    border-color: var(--accent-pink);
+    color: #fff;
+    opacity: 1;
+  }
+  button.cancel-btn { background: var(--accent-danger); color: #fff; }
+  .empty { color: var(--text-secondary); text-align: center; margin-top: 40px; }
 </style>
 </head>
 <body>
 
-<h1>📅 Запись на занятия</h1>
+<div class="app-shell">
+  <div class="app-header"></div>
 
-<div id="myBookingBlock" class="status-card" style="display:none;"></div>
+  <h1>Запись на занятия</h1>
 
-<div id="classList" class="class-list"></div>
-<div id="loading" class="empty">Загрузка...</div>
+  <div id="myBookingBlock" class="status-card" style="display:none;"></div>
+
+  <div id="classList" class="class-list"></div>
+  <div id="loading" class="empty">Загрузка...</div>
+</div>
 
 <script>
 const tg = window.Telegram.WebApp;
@@ -98,7 +139,7 @@ function render() {
   if (myBooking) {
     bookingBlock.style.display = 'block';
     bookingBlock.innerHTML = `
-      <div class="title">✅ Твоя запись</div>
+      <div class="title">Твоя запись</div>
       <p>${myBooking.day} ${myBooking.time} — ${myBooking.className}</p>
       <button class="cancel-btn" onclick="cancelBooking()">Отменить запись</button>
     `;
@@ -118,7 +159,7 @@ function render() {
         <div class="type">${s.type}</div>
         <div class="spots">${s.spots} мест</div>
       </div>
-      <button class="book-btn" ${myBooking ? 'disabled' : ''} onclick="book('${s.id}')">
+      <button class="book-btn ${alreadyBookedThis ? 'booked' : ''}" ${myBooking ? 'disabled' : ''} onclick="book('${s.id}')">
         ${alreadyBookedThis ? 'Записан' : 'Записаться'}
       </button>
     `;
