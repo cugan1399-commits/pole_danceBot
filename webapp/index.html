@@ -36,11 +36,10 @@
     padding: 0 16px 24px;
   }
   .app-header {
-    background: url('logo.png') center / contain no-repeat;
+    background: url('logo.png') center / cover no-repeat;
     aspect-ratio: 600 / 300;
     width: 100%;
-    max-width: 320px;
-    margin: 16px auto 20px;
+    margin: 0 0 20px;
   }
   h1 {
     font-size: 20px;
@@ -104,9 +103,9 @@
 </head>
 <body>
 
-<div class="app-shell">
-  <div class="app-header"></div>
+<div class="app-header"></div>
 
+<div class="app-shell">
   <h1>Запись на занятия</h1>
 
   <div id="myBookingBlock" class="status-card" style="display:none;"></div>
