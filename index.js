@@ -1,15 +1,25 @@
+import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
+import crypto from 'crypto';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { MongoClient } from 'mongodb';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json());
+// Отдаём статику Mini App (папка webapp/ рядом с index.js)
+app.use(express.static(path.join(__dirname, 'webapp')));
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 const WEBHOOK_PATH = `/webhook/${BOT_TOKEN}`;
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const ADMIN_ID = 8658993738; // ← впиши свой Telegram ID
+// Публичный адрес твоего бота на Render — используется для кнопки Mini App
+const WEBAPP_URL = process.env.WEBAPP_URL || 'https://pole-dancebot.onrender.com';
 
 // MongoDB подключение
 let db;
@@ -51,10 +61,98 @@ function answerCallback(callbackQueryId, text = '') {
   });
 }
 
+// ===================== ПРОВЕРКА TELEGRAM WEBAPP initData =====================
+// Telegram подписывает initData секретным ключом, производным от BOT_TOKEN.
+// Это защищает от подделки: без правильного токена подпись не сойдётся.
+function verifyInitData(initData) {
+  try {
+    const params = new URLSearchParams(initData);
+    const hash = params.get('hash');
+    params.delete('hash');
+
+    const dataCheckArr = [];
+    for (const [key, value] of [...params.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      dataCheckArr.push(`${key}=${value}`);
+    }
+    const dataCheckString = dataCheckArr.join('\n');
+
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+    const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    if (computedHash !== hash) return null;
+
+    const userJson = params.get('user');
+    if (!userJson) return null;
+    return JSON.parse(userJson); // { id, first_name, username, ... }
+  } catch (err) {
+    console.error('Ошибка проверки initData:', err);
+    return null;
+  }
+}
+
+// ===================== API ДЛЯ MINI APP =====================
+
+// Расписание всех занятий
+app.get('/api/schedule', (req, res) => {
+  res.json(schedule);
+});
+
+// Текущая запись пользователя
+app.get('/api/mybooking', async (req, res) => {
+  const user = verifyInitData(req.query.initData || '');
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+
+  const booking = await db.collection('bookings').findOne({ chatId: user.id });
+  res.json({ booking: booking || null });
+});
+
+// Записаться на занятие
+app.post('/api/book', async (req, res) => {
+  const { initData, classId } = req.body;
+  const user = verifyInitData(initData || '');
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+
+  const s = schedule.find(x => x.id === classId);
+  if (!s) return res.status(400).json({ error: 'invalid_class' });
+
+  try {
+    await db.collection('bookings').insertOne({
+      chatId: user.id,
+      username: user.username || 'нет username',
+      firstName: user.first_name || '',
+      classId,
+      className: s.type,
+      day: s.day,
+      time: s.time,
+      bookedAt: new Date(),
+    });
+    res.json({ ok: true, booking: s });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'already_booked' });
+    }
+    console.error('Ошибка записи (API):', err);
+    res.status(500).json({ error: 'server_error' });
+  }
+});
+
+// Отменить запись
+app.post('/api/cancel', async (req, res) => {
+  const { initData } = req.body;
+  const user = verifyInitData(initData || '');
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+
+  await db.collection('bookings').deleteOne({ chatId: user.id });
+  res.json({ ok: true });
+});
+
+// ===================== СУЩЕСТВУЮЩАЯ ЛОГИКА БОТА (без изменений) =====================
+
 // /start
 async function handleStart(chatId) {
   const buttons = {
     inline_keyboard: [
+      [{ text: '🚀 Открыть приложение', web_app: { url: WEBAPP_URL } }],
       [{ text: '📅 Записаться', callback_data: 'cmd_book' }],
       [{ text: '📋 Расписание', callback_data: 'cmd_schedule' }],
       [{ text: '✅ Моя запись', callback_data: 'cmd_mybooking' }],
@@ -86,7 +184,7 @@ async function handleSchedule(chatId) {
 // /mybooking
 async function handleMyBooking(chatId) {
     const booking = await db.collection('bookings').findOne({ chatId });
-    
+
     if (!booking) {
         const buttons = {
             inline_keyboard: [
@@ -282,9 +380,3 @@ if (cb) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
-
-
-
-
-
-

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pole Dance — Запись</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #111111);
+    padding: 16px;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 16px;
+  }
+  .status-card {
+    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+  .status-card p { margin: 0 0 4px; }
+  .status-card .title { font-weight: 600; margin-bottom: 8px; }
+  .class-list { display: flex; flex-direction: column; gap: 10px; }
+  .class-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    border-radius: 14px;
+    padding: 14px 16px;
+  }
+  .class-item .info { display: flex; flex-direction: column; }
+  .class-item .day-time { font-weight: 600; }
+  .class-item .type { font-size: 14px; opacity: 0.7; }
+  .class-item .spots { font-size: 13px; opacity: 0.6; margin-top: 2px; }
+  button.book-btn, button.cancel-btn {
+    border: none;
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.book-btn {
+    background: var(--tg-theme-button-color, #2481cc);
+    color: var(--tg-theme-button-text-color, #ffffff);
+  }
+  button.cancel-btn {
+    background: #e5484d;
+    color: #ffffff;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .empty { opacity: 0.6; text-align: center; margin-top: 40px; }
+</style>
+</head>
+<body>
+
+<h1>📅 Запись на занятия</h1>
+
+<div id="myBookingBlock" class="status-card" style="display:none;"></div>
+
+<div id="classList" class="class-list"></div>
+<div id="loading" class="empty">Загрузка...</div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+
+const initData = tg.initData || '';
+
+let schedule = [];
+let myBooking = null;
+
+async function loadData() {
+  const [scheduleRes, bookingRes] = await Promise.all([
+    fetch('/api/schedule').then(r => r.json()),
+    fetch('/api/mybooking?initData=' + encodeURIComponent(initData)).then(r => r.json())
+  ]);
+  schedule = scheduleRes;
+  myBooking = bookingRes.booking;
+  render();
+}
+
+function render() {
+  document.getElementById('loading').style.display = 'none';
+
+  const bookingBlock = document.getElementById('myBookingBlock');
+  if (myBooking) {
+    bookingBlock.style.display = 'block';
+    bookingBlock.innerHTML = `
+      <div class="title">✅ Твоя запись</div>
+      <p>${myBooking.day} ${myBooking.time} — ${myBooking.className}</p>
+      <button class="cancel-btn" onclick="cancelBooking()">Отменить запись</button>
+    `;
+  } else {
+    bookingBlock.style.display = 'none';
+  }
+
+  const list = document.getElementById('classList');
+  list.innerHTML = '';
+  schedule.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'class-item';
+    const alreadyBookedThis = myBooking && myBooking.classId === s.id;
+    item.innerHTML = `
+      <div class="info">
+        <div class="day-time">${s.day} ${s.time}</div>
+        <div class="type">${s.type}</div>
+        <div class="spots">${s.spots} мест</div>
+      </div>
+      <button class="book-btn" ${myBooking ? 'disabled' : ''} onclick="book('${s.id}')">
+        ${alreadyBookedThis ? 'Записан' : 'Записаться'}
+      </button>
+    `;
+    list.appendChild(item);
+  });
+}
+
+async function book(classId) {
+  const res = await fetch('/api/book', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, classId })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    tg.HapticFeedback.notificationOccurred('success');
+    myBooking = { ...data.booking, classId };
+    render();
+  } else if (data.error === 'already_booked') {
+    tg.showAlert('Ты уже записан(а) на занятие.');
+  } else {
+    tg.showAlert('Не удалось записаться. Попробуй позже.');
+  }
+}
+
+async function cancelBooking() {
+  const res = await fetch('/api/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    tg.HapticFeedback.notificationOccurred('success');
+    myBooking = null;
+    render();
+  }
+}
+
+loadData();
+</script>
+
+</body>
+</html>
