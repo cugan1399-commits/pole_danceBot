@@ -306,26 +306,16 @@ app.delete('/api/admin/class-bookings/:id', async (req, res) => {
 // ===================== СУЩЕСТВУЮЩАЯ ЛОГИКА БОТА (без изменений) =====================
 
 async function handleStart(chatId) {
-  const buttons = {
-    inline_keyboard: [
-      [{ text: '🚀 Открыть приложение', web_app: { url: WEBAPP_URL } }],
-      [{ text: '📅 Записаться', callback_data: 'cmd_book' }],
-      [{ text: '📋 Расписание', callback_data: 'cmd_schedule' }],
-      [{ text: '✅ Моя запись', callback_data: 'cmd_mybooking' }],
-      [{ text: '❌ Отменить запись', callback_data: 'cmd_cancel' }],
-    ]
+  // Создаем пустую разметку, чтобы удалить старую обычную клавиатуру, если она где-то осталась
+  const removeMarkup = {
+    remove_keyboard: true
   };
 
-  if (chatId === ADMIN_ID) {
-    buttons.inline_keyboard.push(
-      [{ text: '📌 Добавить занятие', callback_data: 'ac_start' }],
-      [{ text: '🗓 Календарь', callback_data: 'cal_start' }],
-      [{ text: '➕ Добавить тренера', callback_data: 'admin_add_trainer' }],
-      [{ text: '➕ Добавить направление', callback_data: 'admin_add_direction' }],
-    );
-  }
-
-  await sendMessage(chatId, '👋 Привет! Я бот для записи на занятия pole dance.\n\nВыбери действие:', buttons);
+  await sendMessage(
+    chatId, 
+    '👋 Привет! Я бот для записи на занятияe.\n\nВсё управление и запись теперь находятся внутри нашего мини-приложения.\n\nНажми кнопку «Запись» в самом низу экрана (слева от поля ввода), чтобы войти!', 
+    { reply_markup: removeMarkup }
+  );
 }
 
 async function handleBook(chatId) {
