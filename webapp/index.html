@@ -635,14 +635,58 @@ function appInfoCard(a) {
       return times.length ? `${l}: ${times.join(', ')}` : null;
     })
     .filter(Boolean).join('<br>') || '—';
+
+  let actions = '';
+  if (a.confirmedClassId && a.status !== 'confirmed') {
+    actions = `<button class="primary-btn" style="width:100%;margin-top:8px" onclick="sendApplicationConfirmation()">✅ Подтвердить занятие и отправить участнику</button>`;
+  } else if (a.status === 'confirmed') {
+    actions = `<p class="app-summary-line" style="color:var(--accent-pink);margin-top:8px">✅ Участнику уже отправлено подтверждение</p>`;
+  }
+  actions += `<button class="wizard-opt" style="margin-top:8px" onclick="deleteApplication()">🗑 Удалить заявку</button>`;
+
   return `
     <div class="status-card">
       <div class="title">${a.name} (${a.username ? '@' + a.username : a.phone})</div>
       <p class="app-summary-line">Направление: ${a.direction}, группа: ${a.group}</p>
       <p class="app-summary-line">Тренер в заявке: ${a.trainerName || 'не выбран'}</p>
       <p class="app-summary-line" style="margin-top:6px">Удобное время:<br>${availabilityText}</p>
+      ${actions}
     </div>
   `;
+}
+
+async function refreshCurrentApplication() {
+  assignState.application = await fetch(
+    `/api/admin/applications/${assignState.application._id}?initData=${encodeURIComponent(initData)}`
+  ).then(r => r.json());
+}
+
+async function sendApplicationConfirmation() {
+  const res = await fetch(`/api/admin/applications/${assignState.application._id}/send-confirmation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    tg.HapticFeedback.notificationOccurred('success');
+    tg.showAlert('Отправлено участнику!');
+    await refreshCurrentApplication();
+    renderAssignPanel();
+  } else {
+    tg.showAlert('Не получилось отправить.');
+  }
+}
+
+function deleteApplication() {
+  tg.showConfirm('Удалить эту заявку? Действие необратимо.', async (ok) => {
+    if (!ok) return;
+    await fetch(`/api/admin/applications/${assignState.application._id}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
+    tg.HapticFeedback.notificationOccurred('success');
+    assignState = null;
+    document.getElementById('assignPanel').innerHTML = '';
+    loadApplications();
+  });
 }
 
 async function loadApplications() {
@@ -737,11 +781,22 @@ function renderClassRow(cls, h) {
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','direction')">${cls.direction}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','trainer')">${cls.trainerName}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','participants')">Участники (${cls.participants.length})</button>`;
+  row += `<button class="wizard-opt" onclick="assignDeleteClass('${cls._id}')">🗑</button>`;
   row += '</div>';
   if (assignState.editingClassId === cls._id && assignState.editingField) {
     row += renderInlineEditor(cls);
   }
   return row;
+}
+
+async function assignDeleteClass(classId) {
+  tg.showConfirm('Удалить эту запись целиком? Все участники будут откреплены.', async (ok) => {
+    if (!ok) return;
+    await fetch(`/api/admin/classes/${classId}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
+    tg.HapticFeedback.notificationOccurred('success');
+    loadApplications();
+    await loadAgenda();
+  });
 }
 
 function renderInlineEditor(cls) {
@@ -802,8 +857,8 @@ async function assignAddApplicant(classId) {
     body: JSON.stringify({ initData, applicationId: assignState.application._id }),
   });
   tg.HapticFeedback.notificationOccurred('success');
-  tg.showAlert('Записали!');
   loadApplications();
+  await refreshCurrentApplication();
   await loadAgenda();
 }
 
@@ -856,9 +911,10 @@ async function assignCreateNewSlot(time) {
   const data = await res.json();
   if (data.ok) {
     tg.HapticFeedback.notificationOccurred('success');
-    tg.showAlert('Занятие создано, участник записан!');
+    tg.showAlert('Занятие создано, участник записан. Проверьте данные и нажмите «Подтвердить», чтобы уведомить его.');
     assignState.newSlotTime = null;
     loadApplications();
+    await refreshCurrentApplication();
     await loadAgenda();
   } else {
     tg.showAlert(data.error === 'slot_taken' ? 'Этот слот уже занят.' : 'Не получилось создать занятие.');

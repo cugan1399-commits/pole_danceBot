@@ -245,7 +245,7 @@ app.post('/api/admin/classes', async (req, res) => {
   const admin = getVerifiedAdmin(req.body.initData);
   if (!admin) return res.status(403).json({ error: 'forbidden' });
 
-  const { day, time, room, direction, trainerId } = req.body;
+  const { day, time, room, direction, trainerId, group, applicationId } = req.body;
   if (!day || !time || !room || !direction || !trainerId) {
     return res.status(400).json({ error: 'invalid_input' });
   }
@@ -258,9 +258,16 @@ app.post('/api/admin/classes', async (req, res) => {
       direction,
       trainerId: Number(trainerId),
       trainerName: trainer ? trainer.name : 'Неизвестно',
+      group: group || null,
       createdAt: new Date(),
     });
-    res.json({ ok: true, id: result.insertedId });
+
+    if (applicationId) {
+      const application = await db.collection('applications').findOne({ _id: new ObjectId(applicationId) });
+      if (application) await bindApplicationToClass(application, result.insertedId);
+    }
+
+    res.json({ ok: true, id: result.insertedId, classId: result.insertedId });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ error: 'slot_taken' });
     console.error('Ошибка создания занятия (API):', err);
@@ -272,7 +279,14 @@ app.delete('/api/admin/classes/:id', async (req, res) => {
   const admin = getVerifiedAdmin(req.query.initData);
   if (!admin) return res.status(403).json({ error: 'forbidden' });
 
-  await db.collection('classes').deleteOne({ _id: new ObjectId(req.params.id) });
+  const classId = req.params.id;
+  await db.collection('classes').deleteOne({ _id: new ObjectId(classId) });
+  await db.collection('classBookings').deleteMany({ classId });
+  // Если на это занятие была назначена заявка — возвращаем её в статус ожидания
+  await db.collection('applications').updateMany(
+    { confirmedClassId: new ObjectId(classId) },
+    { $unset: { confirmedClassId: '', confirmedAt: '' }, $set: { status: 'pending' } }
+  );
   res.json({ ok: true });
 });
 
@@ -419,7 +433,9 @@ app.get('/api/admin/applications', async (req, res) => {
   res.json(apps);
 });
 
-// Общая функция: привязать заявку к конкретному занятию (бронь + уведомление + статус заявки)
+// Общая функция: привязать заявку к конкретному занятию (просто бронь + пометка, каким занятием закрыта заявка).
+// Уведомление участнику НЕ отправляется здесь — это отдельное явное действие админа (см. /send-confirmation ниже),
+// чтобы можно было сначала спокойно всё проверить и поправить.
 async function bindApplicationToClass(application, classId) {
   const cls = await db.collection('classes').findOne({ _id: new ObjectId(classId) });
   if (!cls) return null;
@@ -440,8 +456,22 @@ async function bindApplicationToClass(application, classId) {
 
   await db.collection('applications').updateOne(
     { _id: application._id },
-    { $set: { status: 'confirmed', confirmedClassId: cls._id, confirmedAt: new Date() } }
+    { $set: { confirmedClassId: cls._id } }
   );
+
+  return cls;
+}
+
+// Отправить участнику подтверждение по уже назначенному занятию — отдельная явная кнопка у админа
+app.post('/api/admin/applications/:id/send-confirmation', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const application = await db.collection('applications').findOne({ _id: new ObjectId(req.params.id) });
+  if (!application || !application.confirmedClassId) return res.status(400).json({ error: 'not_bound' });
+
+  const cls = await db.collection('classes').findOne({ _id: application.confirmedClassId });
+  if (!cls) return res.status(404).json({ error: 'class_not_found' });
 
   try {
     const dayLbl = WEEKDAYS.find(d => d.key === cls.day)?.label || cls.day;
@@ -451,10 +481,35 @@ async function bindApplicationToClass(application, classId) {
     );
   } catch (err) {
     console.error('Не удалось уведомить участника о назначении:', err.message);
+    return res.status(500).json({ error: 'send_failed' });
   }
 
-  return cls;
-}
+  await db.collection('applications').updateOne(
+    { _id: application._id },
+    { $set: { status: 'confirmed', confirmedAt: new Date() } }
+  );
+
+  res.json({ ok: true });
+});
+
+// Одна заявка целиком (актуальные данные — например, после привязки к занятию)
+app.get('/api/admin/applications/:id', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const application = await db.collection('applications').findOne({ _id: new ObjectId(req.params.id) });
+  if (!application) return res.status(404).json({ error: 'not_found' });
+  res.json(application);
+});
+
+// Удалить заявку целиком (например, участник ошибся при заполнении анкеты)
+app.delete('/api/admin/applications/:id', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  await db.collection('applications').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ ok: true });
+});
 
 // Агенда конкретного дня и зала — все часы, с уже созданными занятиями и их участниками
 app.get('/api/admin/agenda', async (req, res) => {
@@ -481,40 +536,6 @@ app.get('/api/admin/agenda', async (req, res) => {
         group: b.group || null,
       })),
   })));
-});
-
-// Создать новое занятие (день/время уже выбраны на фронте) — опционально сразу привязать заявку
-app.post('/api/admin/classes', async (req, res) => {
-  const admin = getVerifiedAdmin(req.body.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
-
-  const { day, time, room, direction, trainerId, group, applicationId } = req.body;
-  if (!day || !time || !room || !direction || !trainerId) {
-    return res.status(400).json({ error: 'invalid_input' });
-  }
-  const trainer = await db.collection('trainers').findOne({ telegramId: Number(trainerId) });
-
-  let result;
-  try {
-    result = await db.collection('classes').insertOne({
-      day, time, room: Number(room), direction,
-      trainerId: Number(trainerId),
-      trainerName: trainer ? trainer.name : 'Неизвестно',
-      group: group || null,
-      createdAt: new Date(),
-    });
-  } catch (err) {
-    if (err.code === 11000) return res.status(409).json({ error: 'slot_taken' });
-    console.error('Ошибка создания занятия:', err);
-    return res.status(500).json({ error: 'server_error' });
-  }
-
-  if (applicationId) {
-    const application = await db.collection('applications').findOne({ _id: new ObjectId(applicationId) });
-    if (application) await bindApplicationToClass(application, result.insertedId);
-  }
-
-  res.json({ ok: true, classId: result.insertedId });
 });
 
 // Точечное изменение занятия: группа / направление / тренер
