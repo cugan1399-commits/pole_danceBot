@@ -185,6 +185,26 @@
     margin-top: 8px;
     font-size: 13px;
   }
+
+  /* ---- Анкета-заявка ---- */
+  .avail-day-block { margin-bottom: 14px; }
+  .avail-day-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+  .avail-hours { display: flex; flex-wrap: wrap; gap: 6px; }
+  .avail-chip {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .avail-chip.picked { background: var(--accent-pink); border-color: var(--accent-pink); color: #fff; }
+  .form-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .form-field label { font-size: 12px; color: var(--text-secondary); }
+  .status-pending { border-left: 3px solid var(--accent-pink); }
+  .app-summary-line { font-size: 13px; color: var(--text-secondary); margin: 2px 0; }
 </style>
 </head>
 <body>
@@ -193,16 +213,24 @@
 
 <div class="app-shell">
   <div class="tabbar" id="tabbar">
-    <button class="tab-btn active" data-tab="schedule" onclick="switchTab('schedule')">Расписание</button>
+    <button class="tab-btn active" data-tab="schedule" onclick="switchTab('schedule')">Запись</button>
+    <button class="tab-btn" data-tab="myschedule" onclick="switchTab('myschedule')">Моё расписание</button>
   </div>
 
   <div id="tab-schedule" class="tab-panel">
     <h1>Запись на занятия</h1>
+    <div id="applyRoot"></div>
+  </div>
 
-    <div id="myBookingBlock" class="status-card" style="display:none;"></div>
+  <div id="tab-myschedule" class="tab-panel" style="display:none">
+    <h1>Моё расписание</h1>
+    <div id="myScheduleList" class="class-list"></div>
+  </div>
 
-    <div id="classList" class="class-list"></div>
-    <div id="loading" class="empty">Загрузка...</div>
+  <div id="tab-applications" class="tab-panel" style="display:none">
+    <h1>Заявки</h1>
+    <div id="applicationsList" class="class-list"></div>
+    <div id="assignPanel"></div>
   </div>
 
   <div id="tab-trainers" class="tab-panel" style="display:none">
@@ -249,91 +277,227 @@ tg.expand();
 
 const initData = tg.initData || '';
 
-let schedule = [];
-let myBooking = null;
+const APP_WEEKDAYS = [
+  ['mon', 'Понедельник'], ['tue', 'Вторник'], ['wed', 'Среда'],
+  ['thu', 'Четверг'], ['fri', 'Пятница'], ['sat', 'Суббота'], ['sun', 'Воскресенье'],
+];
+const APP_HOURS = [];
+for (let h = 9; h <= 20; h++) APP_HOURS.push(String(h).padStart(2, '0') + ':00');
+const APP_GROUPS = ['Новичок', 'Standard', 'Pro'];
 
-async function loadData() {
-  const [scheduleRes, bookingRes] = await Promise.all([
-    fetch('/api/schedule').then(r => r.json()),
-    fetch('/api/mybooking?initData=' + encodeURIComponent(initData)).then(r => r.json())
+function appDayLabel(key) {
+  const found = APP_WEEKDAYS.find(([k]) => k === key);
+  return found ? found[1] : key;
+}
+
+// ---------- "Запись" (анкета-заявка) ----------
+let applyState = { step: 'loading', direction: null, trainerId: null, trainerName: null, group: null, availability: [] };
+let directionsCache = [];
+let trainersCache = [];
+
+async function initApplyTab() {
+  const [myApps, mySchedule] = await Promise.all([
+    fetch('/api/myapplications?initData=' + encodeURIComponent(initData)).then(r => r.json()),
+    fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json()),
   ]);
-  schedule = scheduleRes;
-  myBooking = bookingRes.booking;
-  render();
+  const pending = myApps.find(a => a.status === 'pending');
+
+  if (pending) {
+    renderApplyStatus(pending, mySchedule.length);
+    return;
+  }
+  applyState = { step: 'direction', direction: null, trainerId: null, trainerName: null, group: null, availability: [] };
+  renderApplyWizard();
 }
 
-function render() {
-  document.getElementById('loading').style.display = 'none';
+function renderApplyStatus(pending, hasConfirmed) {
+  const root = document.getElementById('applyRoot');
+  root.innerHTML = `
+    <div class="status-card status-pending">
+      <div class="title">Заявка на рассмотрении</div>
+      <p class="app-summary-line">Направление: ${pending.direction}</p>
+      <p class="app-summary-line">Группа: ${pending.group}</p>
+      <p class="app-summary-line">Тренер: ${pending.trainerName || 'ещё не выбран — решит админ'}</p>
+      <p style="margin-top:10px;color:var(--text-secondary)">Тренер свяжется и подтвердит время. Как только вас запишут — придёт сообщение, а занятие появится во вкладке «Моё расписание».</p>
+    </div>
+    ${hasConfirmed ? '' : ''}
+    <button class="primary-btn" style="margin-top:8px" onclick="switchTab('myschedule')">Моё расписание</button>
+  `;
+}
 
-  const bookingBlock = document.getElementById('myBookingBlock');
-  if (myBooking) {
-    bookingBlock.style.display = 'block';
-    bookingBlock.innerHTML = `
-      <div class="title">Твоя запись</div>
-      <p>${myBooking.day} ${myBooking.time} — ${myBooking.className}</p>
-      <button class="cancel-btn" onclick="cancelBooking()">Отменить запись</button>
-    `;
-  } else {
-    bookingBlock.style.display = 'none';
+function renderApplyWizard() {
+  const root = document.getElementById('applyRoot');
+
+  if (applyState.step === 'direction') {
+    root.innerHTML = '<div class="wizard-step-label">Выберите направление</div><div class="wizard-options">' +
+      (directionsCache.length ? directionsCache : ['Pole Dance', 'Exotic', 'Stretching'])
+        .map(d => `<button class="wizard-opt" onclick="applyPickDirection('${d.replace(/'/g, "\\'")}')">${d}</button>`).join('') +
+      '</div>';
+    return;
   }
 
-  const list = document.getElementById('classList');
-  list.innerHTML = '';
-  schedule.forEach(s => {
-    const item = document.createElement('div');
-    item.className = 'class-item';
-    const alreadyBookedThis = myBooking && myBooking.classId === s.id;
-    item.innerHTML = `
-      <div class="info">
-        <div class="day-time">${s.day} ${s.time}</div>
-        <div class="type">${s.type}</div>
-        <div class="spots">${s.spots} мест</div>
+  if (applyState.step === 'trainer') {
+    const options = trainersCache.map(t =>
+      `<button class="wizard-opt" onclick="applyPickTrainer(${t.telegramId}, '${t.name.replace(/'/g, "\\'")}')">${t.name}</button>`
+    ).join('');
+    root.innerHTML = '<button class="wizard-back" onclick="applyBack()">← назад</button>' +
+      `<div class="wizard-step-label">${applyState.direction} — выберите тренера</div><div class="wizard-options">` +
+      options +
+      `<button class="wizard-opt" onclick="applyPickTrainer(null, null)">Не знаю тренера</button>` +
+      '</div>';
+    return;
+  }
+
+  if (applyState.step === 'group') {
+    root.innerHTML = '<button class="wizard-back" onclick="applyBack()">← назад</button>' +
+      '<div class="wizard-step-label">Выберите группу</div><div class="wizard-options">' +
+      APP_GROUPS.map(g => `<button class="wizard-opt" onclick="applyPickGroup('${g}')">${g}</button>`).join('') +
+      '</div>';
+    return;
+  }
+
+  if (applyState.step === 'availability') {
+    let html = '<button class="wizard-back" onclick="applyBack()">← назад</button>';
+    html += '<div class="wizard-step-label">Отметьте всё время, когда вам в целом удобно (можно несколько дней и часов)</div>';
+    APP_WEEKDAYS.forEach(([key, label]) => {
+      html += `<div class="avail-day-block"><div class="avail-day-label">${label}</div><div class="avail-hours">`;
+      APP_HOURS.forEach(h => {
+        const picked = applyState.availability.some(a => a.day === key && a.time === h);
+        html += `<button class="avail-chip ${picked ? 'picked' : ''}" onclick="applyToggleSlot('${key}','${h}', this)">${h}</button>`;
+      });
+      html += '</div></div>';
+    });
+    html += `<button class="primary-btn" style="width:100%;margin-top:8px" onclick="applyGoToContacts()">Далее</button>`;
+    root.innerHTML = html;
+    return;
+  }
+
+  if (applyState.step === 'contacts') {
+    const tgUser = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user : {};
+    const defaultName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ');
+    root.innerHTML = `
+      <button class="wizard-back" onclick="applyBack()">← назад</button>
+      <div class="wizard-step-label">Контактная информация</div>
+      <div class="form-field">
+        <label>Имя</label>
+        <input id="applyName" placeholder="Ваше имя" value="${defaultName}">
       </div>
-      <button class="book-btn ${alreadyBookedThis ? 'booked' : ''}" ${myBooking ? 'disabled' : ''} onclick="book('${s.id}')">
-        ${alreadyBookedThis ? 'Записан' : 'Записаться'}
-      </button>
+      <div class="form-field">
+        <label>Ник в Telegram</label>
+        <input id="applyUsername" value="${tgUser.username ? '@' + tgUser.username : ''}" disabled>
+      </div>
+      <div class="form-field">
+        <label>Номер телефона</label>
+        <input id="applyPhone" placeholder="+375 29 000-00-00">
+      </div>
+      <button class="primary-btn" style="width:100%;margin-top:8px" onclick="submitApplication()">Отправить</button>
     `;
-    list.appendChild(item);
-  });
+    return;
+  }
 }
 
-async function book(classId) {
-  const res = await fetch('/api/book', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, classId })
-  });
-  const data = await res.json();
-  if (data.ok) {
-    tg.HapticFeedback.notificationOccurred('success');
-    myBooking = { ...data.booking, classId };
-    render();
-  } else if (data.error === 'already_booked') {
-    tg.showAlert('Ты уже записан(а) на занятие.');
+function applyBack() {
+  const order = ['direction', 'trainer', 'group', 'availability', 'contacts'];
+  const idx = order.indexOf(applyState.step);
+  if (idx > 0) applyState.step = order[idx - 1];
+  renderApplyWizard();
+}
+
+async function applyPickDirection(d) {
+  applyState.direction = d;
+  if (!trainersCache.length) {
+    trainersCache = await fetch('/api/trainers').then(r => r.json());
+  }
+  applyState.step = 'trainer';
+  renderApplyWizard();
+}
+
+function applyPickTrainer(id, name) {
+  applyState.trainerId = id;
+  applyState.trainerName = name;
+  applyState.step = 'group';
+  renderApplyWizard();
+}
+
+function applyPickGroup(g) {
+  applyState.group = g;
+  applyState.step = 'availability';
+  renderApplyWizard();
+}
+
+function applyToggleSlot(day, time, btnEl) {
+  const idx = applyState.availability.findIndex(a => a.day === day && a.time === time);
+  if (idx >= 0) {
+    applyState.availability.splice(idx, 1);
+    btnEl.classList.remove('picked');
   } else {
-    tg.showAlert('Не удалось записаться. Попробуй позже.');
+    applyState.availability.push({ day, time });
+    btnEl.classList.add('picked');
   }
 }
 
-async function cancelBooking() {
-  const res = await fetch('/api/cancel', {
+function applyGoToContacts() {
+  if (!applyState.availability.length) {
+    tg.showAlert('Отметьте хотя бы один вариант времени.');
+    return;
+  }
+  applyState.step = 'contacts';
+  renderApplyWizard();
+}
+
+async function submitApplication() {
+  const name = document.getElementById('applyName').value.trim();
+  const phone = document.getElementById('applyPhone').value.trim();
+  if (!name || !phone) {
+    tg.showAlert('Заполните имя и телефон.');
+    return;
+  }
+
+  const res = await fetch('/api/apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData })
+    body: JSON.stringify({
+      initData,
+      direction: applyState.direction,
+      trainerId: applyState.trainerId,
+      group: applyState.group,
+      availability: applyState.availability,
+      name, phone,
+    }),
   });
   const data = await res.json();
   if (data.ok) {
     tg.HapticFeedback.notificationOccurred('success');
-    myBooking = null;
-    render();
+    tg.showAlert('Заявка отправлена! Ждите подтверждения.');
+    initApplyTab();
+  } else {
+    tg.showAlert('Не удалось отправить заявку. Попробуйте ещё раз.');
   }
+}
+
+// ---------- "Моё расписание" ----------
+async function loadMySchedule() {
+  const list = await fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json());
+  const el = document.getElementById('myScheduleList');
+  el.innerHTML = list.length
+    ? list.map(c => `
+        <div class="class-item">
+          <div class="info">
+            <div class="day-time">${c.dayLabel} ${c.time}, зал ${c.room}</div>
+            <div class="type">${c.direction} — тренер ${c.trainerName}</div>
+          </div>
+        </div>
+      `).join('')
+    : '<div class="empty">Пока нет подтверждённых занятий. Отправьте заявку во вкладке «Запись».</div>';
 }
 
 // ===================== Админ-режим: вкладки, тренеры, направления, занятия, календарь =====================
 let isAdmin = false;
 
 async function initApp() {
-  loadData();
+  directionsCache = await fetch('/api/directions').then(r => r.json());
+  await initApplyTab();
+
   try {
     const me = await fetch('/api/me?initData=' + encodeURIComponent(initData)).then(r => r.json());
     isAdmin = !!me.isAdmin;
@@ -341,11 +505,18 @@ async function initApp() {
     isAdmin = false;
   }
   if (isAdmin) buildAdminTabs();
+
+  // Если тренер/админ перешёл по кнопке из уведомления о конкретной заявке — сразу открываем её
+  const wantedAppId = new URLSearchParams(location.search).get('app');
+  if (isAdmin && wantedAppId) {
+    switchTab('applications');
+  }
 }
 
 function buildAdminTabs() {
   const bar = document.getElementById('tabbar');
   const tabs = [
+    { id: 'applications', label: 'Заявки' },
     { id: 'trainers', label: 'Тренеры' },
     { id: 'directions', label: 'Направления' },
     { id: 'classes', label: 'Занятия' },
@@ -365,7 +536,10 @@ function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
   document.getElementById('tab-' + tabId).style.display = 'block';
-  if (tabId === 'trainers') loadTrainers();
+  if (tabId === 'schedule') initApplyTab();
+  else if (tabId === 'myschedule') loadMySchedule();
+  else if (tabId === 'applications') loadApplications();
+  else if (tabId === 'trainers') loadTrainers();
   else if (tabId === 'directions') loadDirections();
   else if (tabId === 'classes') startClassWizard();
   else if (tabId === 'calendar') initCalendar();
@@ -437,6 +611,142 @@ async function addDirection() {
     loadDirections();
   } else {
     tg.showAlert(data.error === 'already_exists' ? 'Такое направление уже есть.' : 'Не получилось сохранить.');
+  }
+}
+
+// ---------- Заявки (админ) ----------
+let assignState = null; // { application, mode: 'pick'|'new', day, time, room, trainerId }
+
+async function loadApplications() {
+  const apps = await fetch('/api/admin/applications?initData=' + encodeURIComponent(initData)).then(r => r.json());
+  const el = document.getElementById('applicationsList');
+  document.getElementById('assignPanel').innerHTML = '';
+
+  el.innerHTML = apps.length
+    ? apps.map(a => `
+        <div class="class-item" style="cursor:pointer" onclick="openAssign('${a._id}')">
+          <div class="info">
+            <div class="day-time">${a.name} — ${a.direction} (${a.group})</div>
+            <div class="type">Тренер: ${a.trainerName || 'не выбран'} · ${a.username ? '@' + a.username : a.phone}</div>
+          </div>
+        </div>
+      `).join('')
+    : '<div class="empty" style="margin-top:0">Новых заявок нет</div>';
+
+  window._applications = apps;
+}
+
+async function openAssign(appId) {
+  const application = (window._applications || []).find(a => a._id === appId);
+  if (!application) return;
+
+  const existingClasses = await fetch('/api/admin/classes-by-direction?initData=' + encodeURIComponent(initData) + '&direction=' + encodeURIComponent(application.direction)).then(r => r.json());
+
+  assignState = { application, mode: 'pick', day: null, time: null, room: null, trainerId: application.trainerId || null };
+  renderAssignPanel(existingClasses);
+}
+
+function renderAssignPanel(existingClasses) {
+  const panel = document.getElementById('assignPanel');
+  const a = assignState.application;
+
+  let availabilityText = APP_WEEKDAYS
+    .map(([k, l]) => {
+      const times = a.availability.filter(x => x.day === k).map(x => x.time);
+      return times.length ? `${l}: ${times.join(', ')}` : null;
+    })
+    .filter(Boolean).join('<br>') || '—';
+
+  let html = `
+    <div class="status-card">
+      <div class="title">${a.name} (${a.username ? '@' + a.username : a.phone})</div>
+      <p class="app-summary-line">Направление: ${a.direction}, группа: ${a.group}</p>
+      <p class="app-summary-line">Тренер в заявке: ${a.trainerName || 'не выбран'}</p>
+      <p class="app-summary-line" style="margin-top:6px">Удобное время:<br>${availabilityText}</p>
+    </div>
+  `;
+
+  if (existingClasses.length) {
+    html += '<div class="wizard-step-label">Назначить на уже существующее занятие</div><div class="wizard-options">' +
+      existingClasses.map(c => `<button class="wizard-opt" onclick="assignToExisting('${c._id}')">${c.dayLabel} ${c.time} зал ${c.room} (${c.trainerName})</button>`).join('') +
+      '</div>';
+  }
+
+  html += '<div class="wizard-step-label" style="margin-top:14px">Или создать новое занятие</div><div id="assignNewWizard"></div>';
+  panel.innerHTML = html;
+  renderAssignNewWizard();
+}
+
+async function assignToExisting(classId) {
+  const res = await fetch(`/api/admin/applications/${assignState.application._id}/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, classId }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    tg.HapticFeedback.notificationOccurred('success');
+    tg.showAlert('Заявка назначена!');
+    loadApplications();
+  } else {
+    tg.showAlert('Не получилось назначить.');
+  }
+}
+
+async function renderAssignNewWizard() {
+  const el = document.getElementById('assignNewWizard');
+
+  if (!assignState.day) {
+    el.innerHTML = '<div class="wizard-options">' +
+      APP_WEEKDAYS.map(([k, l]) => `<button class="wizard-opt" onclick="assignPickDay('${k}')">${l}</button>`).join('') +
+      '</div>';
+    return;
+  }
+  if (!assignState.time) {
+    el.innerHTML = '<div class="wizard-options">' +
+      APP_HOURS.map(h => `<button class="wizard-opt" onclick="assignPickTime('${h}')">${h}</button>`).join('') +
+      '</div>';
+    return;
+  }
+  if (!assignState.room) {
+    el.innerHTML = '<div class="wizard-options">' +
+      [1, 2].map(r => `<button class="wizard-opt" onclick="assignPickRoom(${r})">Зал ${r}</button>`).join('') +
+      '</div>';
+    return;
+  }
+  if (!assignState.trainerId) {
+    if (!trainersCache.length) trainersCache = await fetch('/api/trainers').then(r => r.json());
+    el.innerHTML = '<div class="wizard-options">' +
+      trainersCache.map(t => `<button class="wizard-opt" onclick="assignPickTrainer(${t.telegramId})">${t.name}</button>`).join('') +
+      '</div>';
+    return;
+  }
+
+  el.innerHTML = `<button class="primary-btn" style="width:100%" onclick="confirmAssignNew()">Создать и назначить</button>`;
+}
+
+function assignPickDay(k) { assignState.day = k; renderAssignNewWizard(); }
+function assignPickTime(t) { assignState.time = t; renderAssignNewWizard(); }
+function assignPickRoom(r) { assignState.room = r; renderAssignNewWizard(); }
+function assignPickTrainer(id) { assignState.trainerId = id; renderAssignNewWizard(); }
+
+async function confirmAssignNew() {
+  const res = await fetch(`/api/admin/applications/${assignState.application._id}/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      initData,
+      day: assignState.day, time: assignState.time, room: assignState.room,
+      direction: assignState.application.direction, trainerId: assignState.trainerId,
+    }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    tg.HapticFeedback.notificationOccurred('success');
+    tg.showAlert('Занятие создано и заявка назначена!');
+    loadApplications();
+  } else {
+    tg.showAlert(data.error === 'slot_taken' ? 'Этот зал уже занят на это время.' : 'Не получилось создать занятие.');
   }
 }
 
