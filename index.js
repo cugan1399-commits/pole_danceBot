@@ -50,10 +50,11 @@ async function connectDB() {
     // Заявки от обычных участников ("хочу записаться")
     await db.collection('applications').createIndex({ chatId: 1, status: 1 });
 
-    // Регистрируем главного админа как тренера по умолчанию, если его ещё нет
+    // Регистрируем главного админа как тренера по умолчанию — имя обновляем при каждом старте,
+    // чтобы поправить, если раньше уже была сохранена другая надпись
     await db.collection('trainers').updateOne(
       { telegramId: ADMIN_ID },
-      { $setOnInsert: { telegramId: ADMIN_ID, name: 'Админ (ты)', addedAt: new Date() } },
+      { $set: { name: 'Рома' }, $setOnInsert: { telegramId: ADMIN_ID, addedAt: new Date() } },
       { upsert: true }
     );
 
@@ -418,49 +419,10 @@ app.get('/api/admin/applications', async (req, res) => {
   res.json(apps);
 });
 
-// Существующие занятия по направлению — чтобы админ мог назначить заявку на уже созданное занятие
-app.get('/api/admin/classes-by-direction', async (req, res) => {
-  const admin = getVerifiedAdmin(req.query.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
-
-  const filter = req.query.direction ? { direction: req.query.direction } : {};
-  const classes = await db.collection('classes').find(filter).sort({ day: 1, time: 1 }).toArray();
-  res.json(classes.map(c => ({ ...c, dayLabel: WEEKDAYS.find(d => d.key === c.day)?.label || c.day })));
-});
-
-// Назначить заявку на занятие: либо на уже существующее (classId), либо создать новое (day/time/room/direction/trainerId)
-app.post('/api/admin/applications/:id/assign', async (req, res) => {
-  const admin = getVerifiedAdmin(req.body.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
-
-  const application = await db.collection('applications').findOne({ _id: new ObjectId(req.params.id) });
-  if (!application) return res.status(404).json({ error: 'not_found' });
-
-  let classId = req.body.classId;
-
-  if (!classId) {
-    const { day, time, room, direction, trainerId } = req.body;
-    if (!day || !time || !room || !direction || !trainerId) {
-      return res.status(400).json({ error: 'invalid_input' });
-    }
-    const trainer = await db.collection('trainers').findOne({ telegramId: Number(trainerId) });
-    try {
-      const result = await db.collection('classes').insertOne({
-        day, time, room: Number(room), direction,
-        trainerId: Number(trainerId),
-        trainerName: trainer ? trainer.name : 'Неизвестно',
-        createdAt: new Date(),
-      });
-      classId = String(result.insertedId);
-    } catch (err) {
-      if (err.code === 11000) return res.status(409).json({ error: 'slot_taken' });
-      console.error('Ошибка создания занятия при назначении:', err);
-      return res.status(500).json({ error: 'server_error' });
-    }
-  }
-
+// Общая функция: привязать заявку к конкретному занятию (бронь + уведомление + статус заявки)
+async function bindApplicationToClass(application, classId) {
   const cls = await db.collection('classes').findOne({ _id: new ObjectId(classId) });
-  if (!cls) return res.status(404).json({ error: 'class_not_found' });
+  if (!cls) return null;
 
   try {
     await db.collection('classBookings').insertOne({
@@ -473,11 +435,7 @@ app.post('/api/admin/applications/:id/assign', async (req, res) => {
       bookedAt: new Date(),
     });
   } catch (err) {
-    if (err.code !== 11000) {
-      console.error('Ошибка бронирования занятия при назначении:', err);
-      return res.status(500).json({ error: 'server_error' });
-    }
-    // Уже был записан на это же занятие — не критично, продолжаем
+    if (err.code !== 11000) throw err; // уже был записан на это же занятие — не критично
   }
 
   await db.collection('applications').updateOne(
@@ -495,7 +453,108 @@ app.post('/api/admin/applications/:id/assign', async (req, res) => {
     console.error('Не удалось уведомить участника о назначении:', err.message);
   }
 
-  res.json({ ok: true, classId: cls._id });
+  return cls;
+}
+
+// Агенда конкретного дня и зала — все часы, с уже созданными занятиями и их участниками
+app.get('/api/admin/agenda', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const { day, room } = req.query;
+  if (!day || !room) return res.status(400).json({ error: 'invalid_input' });
+
+  const classes = await db.collection('classes').find({ day, room: Number(room) }).toArray();
+  const classIds = classes.map(c => String(c._id));
+  const bookings = classIds.length
+    ? await db.collection('classBookings').find({ classId: { $in: classIds } }).toArray()
+    : [];
+
+  res.json(classes.map(c => ({
+    ...c,
+    participants: bookings
+      .filter(b => b.classId === String(c._id))
+      .map(b => ({
+        chatId: b.chatId,
+        name: b.firstName || (b.username ? '@' + b.username : 'Без имени'),
+        username: b.username,
+        group: b.group || null,
+      })),
+  })));
+});
+
+// Создать новое занятие (день/время уже выбраны на фронте) — опционально сразу привязать заявку
+app.post('/api/admin/classes', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const { day, time, room, direction, trainerId, group, applicationId } = req.body;
+  if (!day || !time || !room || !direction || !trainerId) {
+    return res.status(400).json({ error: 'invalid_input' });
+  }
+  const trainer = await db.collection('trainers').findOne({ telegramId: Number(trainerId) });
+
+  let result;
+  try {
+    result = await db.collection('classes').insertOne({
+      day, time, room: Number(room), direction,
+      trainerId: Number(trainerId),
+      trainerName: trainer ? trainer.name : 'Неизвестно',
+      group: group || null,
+      createdAt: new Date(),
+    });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ error: 'slot_taken' });
+    console.error('Ошибка создания занятия:', err);
+    return res.status(500).json({ error: 'server_error' });
+  }
+
+  if (applicationId) {
+    const application = await db.collection('applications').findOne({ _id: new ObjectId(applicationId) });
+    if (application) await bindApplicationToClass(application, result.insertedId);
+  }
+
+  res.json({ ok: true, classId: result.insertedId });
+});
+
+// Точечное изменение занятия: группа / направление / тренер
+app.patch('/api/admin/classes/:id', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const updates = {};
+  if (req.body.group !== undefined) updates.group = req.body.group;
+  if (req.body.direction !== undefined) updates.direction = req.body.direction;
+  if (req.body.trainerId !== undefined) {
+    const trainer = await db.collection('trainers').findOne({ telegramId: Number(req.body.trainerId) });
+    updates.trainerId = Number(req.body.trainerId);
+    updates.trainerName = trainer ? trainer.name : 'Неизвестно';
+  }
+  if (!Object.keys(updates).length) return res.status(400).json({ error: 'invalid_input' });
+
+  await db.collection('classes').updateOne({ _id: new ObjectId(req.params.id) }, { $set: updates });
+  res.json({ ok: true });
+});
+
+// Добавить заявителя в участники существующего занятия
+app.post('/api/admin/classes/:id/participants', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const application = await db.collection('applications').findOne({ _id: new ObjectId(req.body.applicationId) });
+  if (!application) return res.status(404).json({ error: 'not_found' });
+
+  await bindApplicationToClass(application, req.params.id);
+  res.json({ ok: true });
+});
+
+// Убрать участника из занятия
+app.delete('/api/admin/classes/:id/participants/:chatId', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  await db.collection('classBookings').deleteOne({ classId: req.params.id, chatId: Number(req.params.chatId) });
+  res.json({ ok: true });
 });
 
 // ===================== НАПОМИНАНИЯ О ТРЕНИРОВКЕ (за 1 час, с подтверждением Да/Нет) =====================
