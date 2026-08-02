@@ -258,6 +258,7 @@
 
   <div id="tab-classes" class="tab-panel" style="display:none">
     <h1>Добавить занятие</h1>
+    <div id="classClearAllBox"></div>
     <div id="classWizard"></div>
   </div>
 
@@ -1035,11 +1036,16 @@ async function assignCreateNewSlot(time) {
     // чтобы сразу стало видно, чьё это занятие.
     assignState.newSlotTime = null;
     await loadAgenda();
-    tg.showAlert(
-      data.error === 'slot_taken'
-        ? 'Это время уже заняли (возможно, только что) — обновил список, посмотрите, что там теперь стоит.'
-        : 'Не получилось создать занятие.'
-    );
+    if (data.error === 'slot_taken' && data.existing) {
+      const e = data.existing;
+      tg.showAlert(`Это время уже занято: ${e.direction || '—'}${e.group ? ' / ' + e.group : ''}, тренер ${e.trainerName || '—'} (зал ${e.room}). Обновил список.`);
+    } else {
+      tg.showAlert(
+        data.error === 'slot_taken'
+          ? 'Это время уже заняли (возможно, только что) — обновил список, посмотрите, что там теперь стоит.'
+          : 'Не получилось создать занятие.'
+      );
+    }
   }
 }
 
@@ -1058,7 +1064,40 @@ function dayLabel(key) {
 
 let wizardState = {};
 
+// ВРЕМЕННО: кнопка полной очистки занятий — чтобы разобраться с багом "слот занят,
+// хотя нигде не видно". Уберём, когда разберёмся окончательно. Видна только владельцу.
+function renderClearAllBox() {
+  const box = document.getElementById('classClearAllBox');
+  if (!box) return;
+  if (!isAdmin) { box.innerHTML = ''; return; }
+  box.innerHTML = `
+    <button class="wizard-opt" style="border-color:var(--accent-danger);color:var(--accent-danger);margin-bottom:12px" onclick="clearAllClasses()">
+      🧹 (временно) Очистить ВСЕ занятия и записи
+    </button>
+  `;
+}
+
+function clearAllClasses() {
+  tg.showConfirm('Удалить ВСЕ занятия и записи участников во всех залах и днях? Это нельзя отменить.', async (ok) => {
+    if (!ok) return;
+    const res = await fetch('/api/admin/classes/clear-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      tg.HapticFeedback.notificationOccurred('success');
+      tg.showAlert(`Удалено занятий: ${data.deleted}. Список очищен.`);
+      startClassWizard();
+    } else {
+      tg.showAlert('Не получилось очистить.');
+    }
+  });
+}
+
 function startClassWizard() {
+  renderClearAllBox();
   wizardState = { day: null, time: null, room: null, direction: null, trainerId: null };
   renderWizard();
 }

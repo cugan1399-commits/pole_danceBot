@@ -249,6 +249,23 @@ app.post('/api/admin/trainers', async (req, res) => {
 });
 
 // Список занятий — можно за конкретный день недели (?day=mon) или все сразу
+// ВРЕМЕННО: полная очистка всех занятий и записей на них — для отладки текущего бага
+// с "слот занят, хотя нигде не отображается". Доступно только владельцу (ADMIN_ID).
+app.post('/api/admin/classes/clear-all', async (req, res) => {
+  const user = verifyInitData(req.body.initData || '');
+  if (!user || user.id !== ADMIN_ID) return res.status(403).json({ error: 'forbidden' });
+
+  const classesCount = await db.collection('classes').countDocuments({});
+  await db.collection('classes').deleteMany({});
+  await db.collection('classBookings').deleteMany({});
+  await db.collection('applications').updateMany(
+    {},
+    { $set: { status: 'pending' }, $unset: { confirmedClassId: '', confirmedClassIds: '', confirmedAt: '' } }
+  );
+
+  res.json({ ok: true, deleted: classesCount });
+});
+
 app.get('/api/admin/classes', async (req, res) => {
   const admin = getVerifiedAdmin(req.query.initData);
   if (!admin) return res.status(403).json({ error: 'forbidden' });
@@ -286,7 +303,11 @@ app.post('/api/admin/classes', async (req, res) => {
 
     res.json({ ok: true, id: result.insertedId, classId: result.insertedId });
   } catch (err) {
-    if (err.code === 11000) return res.status(409).json({ error: 'slot_taken' });
+    if (err.code === 11000) {
+      const existing = await db.collection('classes').findOne({ day, time, room: Number(room) });
+      console.error('Слот занят — конфликтующее занятие:', existing);
+      return res.status(409).json({ error: 'slot_taken', existing });
+    }
     console.error('Ошибка создания занятия (API):', err);
     res.status(500).json({ error: 'server_error' });
   }
