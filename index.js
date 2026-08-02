@@ -10,7 +10,7 @@ import cron from 'node-cron';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'webapp')));
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -61,6 +61,7 @@ async function connectDB() {
     await db.collection('classes').createIndex({ day: 1, time: 1, room: 1 }, { unique: true });
     await db.collection('classBookings').createIndex({ classId: 1, chatId: 1 }, { unique: true });
     await db.collection('applications').createIndex({ chatId: 1, status: 1 });
+    await db.collection('events').createIndex({ date: 1 });
 
     // Главный админ с возможностью обновления его username/имени
     await db.collection('trainers').updateOne(
@@ -91,6 +92,29 @@ function sendMessage(chatId, text, keyboard) {
   const data = { chat_id: chatId, text, parse_mode: 'HTML' };
   if (keyboard) data.reply_markup = keyboard;
   return axios.post(`${API}/sendMessage`, data);
+}
+
+async function sendPhoto(chatId, imageData, caption) {
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) {
+    form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+  }
+  const ext = (imageData.mime.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+  form.append('photo', new Blob([imageData.buffer], { type: imageData.mime }), `photo.${ext}`);
+
+  const resp = await fetch(`${API}/sendPhoto`, { method: 'POST', body: form });
+  const json = await resp.json();
+  if (!json.ok) throw new Error(json.description || 'sendPhoto failed');
+  return json;
+}
+
+function parseDataUrl(dataUrl) {
+  if (!dataUrl) return null;
+  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(dataUrl);
+  if (!match) return null;
+  return { mime: match[1], buffer: Buffer.from(match[2], 'base64') };
 }
 
 function answerCallback(callbackQueryId, text = '') {
@@ -354,7 +378,9 @@ app.get('/api/admin/calendar', async (req, res) => {
     return { ...c, participants: participants.map(p => ({ username: p.username, chatId: p.chatId })) };
   }));
 
-  res.json({ date: dateStr, day: dayKey, classes: withParticipants });
+  const events = await db.collection('events').find({ date: dateStr }, { projection: { imageData: 0 } }).toArray();
+
+  res.json({ date: dateStr, day: dayKey, classes: withParticipants, events: events.map(e => ({ ...e, hasImage: !!e.imageMime })) });
 });
 
 app.get('/api/trainers', async (req, res) => {
@@ -678,6 +704,144 @@ app.delete('/api/admin/classes/:id/participants/:chatId', async (req, res) => {
 
   await db.collection('classBookings').deleteOne({ classId: req.params.id, chatId: Number(req.params.chatId) });
   res.json({ ok: true });
+});
+
+// ===================== УЧАСТНИКИ И РАССЫЛКА =====================
+
+app.get('/api/admin/participants', async (req, res) => {
+  const auth = await getVerifiedTrainerOrAdmin(req.query.initData);
+  if (!auth) return res.status(403).json({ error: 'forbidden' });
+
+  const classFilter = auth.isAdmin ? {} : { trainerId: auth.user.id };
+  const classes = await db.collection('classes').find(classFilter).toArray();
+  if (!classes.length) return res.json([]);
+
+  const classById = new Map(classes.map(c => [String(c._id), c]));
+  const classIds = [...classById.keys()];
+  const bookings = await db.collection('classBookings').find({ classId: { $in: classIds } }).toArray();
+
+  const byChatId = new Map();
+  for (const b of bookings) {
+    const cls = classById.get(b.classId);
+    if (!cls) continue;
+    if (!byChatId.has(b.chatId)) {
+      byChatId.set(b.chatId, {
+        chatId: b.chatId,
+        username: b.username || null,
+        name: b.firstName || (b.username ? '@' + b.username : 'Без имени'),
+        directions: new Set(),
+        trainers: new Set(),
+      });
+    }
+    const entry = byChatId.get(b.chatId);
+    entry.directions.add(cls.direction);
+    entry.trainers.add(formatTrainerName(cls.trainerName, cls.trainerUsername));
+  }
+
+  res.json([...byChatId.values()].map(p => ({
+    chatId: p.chatId,
+    username: p.username,
+    name: p.name,
+    directions: [...p.directions].join(', '),
+    trainers: [...p.trainers].join(', '),
+  })));
+});
+
+app.post('/api/admin/broadcast', async (req, res) => {
+  const auth = await getVerifiedTrainerOrAdmin(req.body.initData);
+  if (!auth) return res.status(403).json({ error: 'forbidden' });
+
+  const text = (req.body.text || '').trim();
+  const imageData = parseDataUrl(req.body.imageBase64);
+  if (!text && !imageData) return res.status(400).json({ error: 'empty_message' });
+
+  const classFilter = auth.isAdmin ? {} : { trainerId: auth.user.id };
+  const classes = await db.collection('classes').find(classFilter).toArray();
+  const classIds = classes.map(c => String(c._id));
+  if (!classIds.length) return res.json({ ok: true, sent: 0, failed: 0, total: 0 });
+
+  const bookings = await db.collection('classBookings').find({ classId: { $in: classIds } }).toArray();
+  const chatIds = [...new Set(bookings.map(b => b.chatId))];
+
+  let sent = 0, failed = 0;
+  for (const chatId of chatIds) {
+    try {
+      if (imageData) await sendPhoto(chatId, imageData, text);
+      else await sendMessage(chatId, text);
+      sent++;
+    } catch (err) {
+      failed++;
+      console.error('Рассылка: не удалось отправить', chatId, err.message);
+    }
+    await new Promise(r => setTimeout(r, 40)); // мягкая защита от лимитов Telegram
+  }
+
+  res.json({ ok: true, sent, failed, total: chatIds.length });
+});
+
+// ===================== МЕРОПРИЯТИЯ (только владелец) =====================
+
+app.post('/api/admin/events', async (req, res) => {
+  const admin = getVerifiedAdmin(req.body.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const text = (req.body.text || '').trim();
+  const date = (req.body.date || '').trim();
+  if (!text || !date) return res.status(400).json({ error: 'invalid_input' });
+
+  const imageData = parseDataUrl(req.body.imageBase64);
+
+  const result = await db.collection('events').insertOne({
+    text,
+    date,
+    imageMime: imageData ? imageData.mime : null,
+    imageData: imageData ? imageData.buffer : null,
+    createdBy: admin.id,
+    createdAt: new Date(),
+  });
+
+  res.json({ ok: true, id: result.insertedId });
+});
+
+app.get('/api/admin/events', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  const list = await db.collection('events').find({}, { projection: { imageData: 0 } }).sort({ date: -1 }).toArray();
+  const { dateStr: today } = nowInStudioTZ();
+  res.json(list.map(e => ({ ...e, active: e.date >= today, hasImage: !!e.imageMime })));
+});
+
+app.delete('/api/admin/events/:id', async (req, res) => {
+  const admin = getVerifiedAdmin(req.query.initData);
+  if (!admin) return res.status(403).json({ error: 'forbidden' });
+
+  await db.collection('events').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ ok: true });
+});
+
+app.get('/api/events/active', async (req, res) => {
+  const user = verifyInitData(req.query.initData || '');
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+
+  const { dateStr: today } = nowInStudioTZ();
+  const list = await db.collection('events')
+    .find({ date: { $gte: today } }, { projection: { imageData: 0 } })
+    .sort({ date: 1 })
+    .toArray();
+  res.json(list.map(e => ({ ...e, hasImage: !!e.imageMime })));
+});
+
+app.get('/api/events/:id/image', async (req, res) => {
+  const user = verifyInitData(req.query.initData || '');
+  if (!user) return res.status(401).send('unauthorized');
+
+  const event = await db.collection('events').findOne({ _id: new ObjectId(req.params.id) });
+  if (!event || !event.imageData) return res.status(404).send('not_found');
+
+  const buf = Buffer.isBuffer(event.imageData) ? event.imageData : Buffer.from(event.imageData.buffer || event.imageData);
+  res.set('Content-Type', event.imageMime || 'image/jpeg');
+  res.send(buf);
 });
 
 const STUDIO_TIMEZONE = 'Europe/Minsk';

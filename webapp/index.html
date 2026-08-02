@@ -105,6 +105,44 @@
   .subtab-btn.active { background: var(--bg-card); border-color: var(--accent-pink); color: var(--accent-pink); }
   .placeholder-note { color: var(--text-secondary); font-size: 13px; margin-top: 12px; }
 
+  .admin-form textarea {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 14px;
+    resize: vertical;
+  }
+  .admin-form input[type=file], .admin-form input[type=date] {
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .admin-form label { font-size: 12px; color: var(--text-secondary); }
+  .section-gap { margin-top: 24px; }
+
+  .event-card {
+    background: var(--bg-card);
+    border: 1px solid var(--accent-pink);
+    border-radius: 14px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  .event-card img { width: 100%; border-radius: 10px; margin-bottom: 8px; display: block; }
+  .event-card .event-date { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+  .event-card .event-text { white-space: pre-wrap; }
+
+  .event-admin-item { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .badge { display: inline-block; font-size: 11px; border-radius: 10px; padding: 2px 8px; margin-left: 6px; }
+  .badge.active { background: var(--accent-pink); color: #fff; }
+  .badge.past { background: var(--border-soft); color: var(--text-secondary); }
+
   .admin-form { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
   .admin-form input {
     background: var(--bg-card);
@@ -237,6 +275,7 @@
 
   <div id="tab-myschedule" class="tab-panel" style="display:none">
     <h1>Моё расписание</h1>
+    <div id="eventsBanner"></div>
     <div id="myScheduleList" class="class-list"></div>
   </div>
 
@@ -286,11 +325,25 @@
     </div>
 
     <div id="subtab-participants" class="subtab-panel" style="display:none">
-      <p class="placeholder-note">Раздел «Список участников» — наполним на следующем шаге.</p>
+      <div id="participantsList" class="class-list"></div>
+      <div class="admin-form section-gap">
+        <label>Рассылка участникам</label>
+        <textarea id="broadcastText" rows="4" placeholder="Текст сообщения..."></textarea>
+        <input type="file" id="broadcastImage" accept="image/*">
+        <button class="primary-btn" onclick="sendBroadcast()">Отправить рассылку</button>
+        <div id="broadcastStatus" class="placeholder-note"></div>
+      </div>
     </div>
 
     <div id="subtab-events" class="subtab-panel" style="display:none">
-      <p class="placeholder-note">Раздел «Мероприятия» — наполним на следующем шаге.</p>
+      <div class="admin-form">
+        <label>Дата мероприятия</label>
+        <input type="date" id="eventDateInput">
+        <textarea id="eventTextInput" rows="4" placeholder="Текст мероприятия..."></textarea>
+        <input type="file" id="eventImageInput" accept="image/*">
+        <button class="primary-btn" onclick="createEvent()">Создать мероприятие</button>
+      </div>
+      <div id="eventsAdminList" class="class-list section-gap"></div>
     </div>
   </div>
 </div>
@@ -541,6 +594,7 @@ async function submitApplication() {
 }
 
 async function loadMySchedule() {
+  loadActiveEventsBanner();
   const list = await fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json());
   const el = document.getElementById('myScheduleList');
 
@@ -660,7 +714,8 @@ function switchAdminSubtab(subId) {
   if (subId === 'trainers' && isAdmin) loadTrainers();
   else if (subId === 'directions') loadDirections();
   else if (subId === 'calendar') initCalendar();
-  // 'participants' и 'events' — наполним на следующих шагах
+  else if (subId === 'participants') loadParticipants();
+  else if (subId === 'events' && isAdmin) loadEventsAdmin();
 }
 
 async function loadTrainers() {
@@ -1305,6 +1360,135 @@ async function pickTrainer(id) {
   }
 }
 
+// ===================== УЧАСТНИКИ И РАССЫЛКА =====================
+
+async function loadParticipants() {
+  const el = document.getElementById('participantsList');
+  el.innerHTML = '<div class="empty">Загрузка...</div>';
+  const list = await fetch('/api/admin/participants?initData=' + encodeURIComponent(initData)).then(r => r.json());
+
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">Участников пока нет</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(p => `
+    <div class="class-item">
+      <div class="info">
+        <div class="day-time">${p.username ? '@' + p.username : (p.name || 'Без ника')}</div>
+        <div class="type">${p.directions}${isAdmin ? ' — ' + p.trainers : ''}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve(null);
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function sendBroadcast() {
+  const text = document.getElementById('broadcastText').value.trim();
+  const fileInput = document.getElementById('broadcastImage');
+  const statusEl = document.getElementById('broadcastStatus');
+  const file = fileInput.files[0];
+
+  if (!text && !file) { tg.showAlert('Введите текст или прикрепите изображение'); return; }
+
+  statusEl.textContent = 'Отправка...';
+  const imageBase64 = await fileToBase64(file);
+
+  const res = await fetch('/api/admin/broadcast', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, text, imageBase64 }),
+  });
+  const data = await res.json();
+
+  if (data.ok) {
+    statusEl.textContent = `Отправлено: ${data.sent} из ${data.total}${data.failed ? ', ошибок: ' + data.failed : ''}`;
+    document.getElementById('broadcastText').value = '';
+    fileInput.value = '';
+  } else {
+    statusEl.textContent = 'Не получилось отправить рассылку';
+  }
+}
+
+// ===================== МЕРОПРИЯТИЯ =====================
+
+async function loadEventsAdmin() {
+  const el = document.getElementById('eventsAdminList');
+  el.innerHTML = '<div class="empty">Загрузка...</div>';
+  const list = await fetch('/api/admin/events?initData=' + encodeURIComponent(initData)).then(r => r.json());
+
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">Мероприятий пока нет</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(e => `
+    <div class="class-item event-admin-item">
+      <div><b>${e.date}</b><span class="badge ${e.active ? 'active' : 'past'}">${e.active ? 'активно' : 'прошло'}</span></div>
+      <div class="type">${e.text}</div>
+      <button class="wizard-opt-delete" onclick="deleteEvent('${e._id}')">🗑 Удалить</button>
+    </div>
+  `).join('');
+}
+
+async function createEvent() {
+  const date = document.getElementById('eventDateInput').value;
+  const text = document.getElementById('eventTextInput').value.trim();
+  const fileInput = document.getElementById('eventImageInput');
+  const file = fileInput.files[0];
+
+  if (!date || !text) { tg.showAlert('Укажите дату и текст мероприятия'); return; }
+
+  const imageBase64 = await fileToBase64(file);
+
+  const res = await fetch('/api/admin/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData, date, text, imageBase64 }),
+  });
+  const data = await res.json();
+
+  if (data.ok) {
+    document.getElementById('eventDateInput').value = '';
+    document.getElementById('eventTextInput').value = '';
+    fileInput.value = '';
+    loadEventsAdmin();
+  } else {
+    tg.showAlert('Не получилось создать мероприятие');
+  }
+}
+
+async function deleteEvent(id) {
+  await fetch(`/api/admin/events/${id}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
+  loadEventsAdmin();
+}
+
+function eventCardHtml(e) {
+  const img = e.hasImage ? `<img src="/api/events/${e._id}/image?initData=${encodeURIComponent(initData)}">` : '';
+  return `
+    <div class="event-card">
+      ${img}
+      <div class="event-date">${e.date}</div>
+      <div class="event-text">${e.text}</div>
+    </div>
+  `;
+}
+
+async function loadActiveEventsBanner() {
+  const banner = document.getElementById('eventsBanner');
+  const list = await fetch('/api/events/active?initData=' + encodeURIComponent(initData)).then(r => r.json());
+  banner.innerHTML = list.map(eventCardHtml).join('');
+}
+
 const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 let calDate = new Date();
 let calSelectedDate = null;
@@ -1368,12 +1552,14 @@ async function selectCalendarDate(dateStr, cellEl) {
   const data = await res.json();
   const agendaEl = document.getElementById('calAgenda');
 
+  const eventsHtml = (data.events || []).map(eventCardHtml).join('');
+
   if (!data.classes || !data.classes.length) {
-    agendaEl.innerHTML = `<div class="empty" style="margin-top:20px">На ${dateStr} занятий нет</div>`;
+    agendaEl.innerHTML = eventsHtml + `<div class="empty" style="margin-top:20px">На ${dateStr} занятий нет</div>`;
     return;
   }
 
-  agendaEl.innerHTML = data.classes.map(c => `
+  agendaEl.innerHTML = eventsHtml + data.classes.map(c => `
     <div class="cal-agenda-item">
       <div><b>${c.time}</b> — ${c.direction} (${formatTrainerName(c.trainerName, c.trainerUsername)}) — Зал ${c.room}</div>
       <div style="color:var(--text-secondary);margin-top:4px">Участников: ${c.participants.length}</div>
