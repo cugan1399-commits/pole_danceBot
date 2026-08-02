@@ -385,6 +385,7 @@ function renderApplyWizard() {
   if (applyState.step === 'contacts') {
     const tgUser = tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user : {};
     const defaultName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ');
+    const canEditUsername = isAdmin || isTrainer;
     root.innerHTML = `
       <button class="wizard-back" onclick="applyBack()">← назад</button>
       <div class="wizard-step-label">Контактная информация</div>
@@ -393,8 +394,8 @@ function renderApplyWizard() {
         <input id="applyName" placeholder="Ваше имя" value="${defaultName}">
       </div>
       <div class="form-field">
-        <label>Ник в Telegram</label>
-        <input id="applyUsername" value="${tgUser.username ? '@' + tgUser.username : ''}" disabled>
+        <label>Ник в Telegram${canEditUsername ? ' (можно изменить, если оформляете за участника)' : ''}</label>
+        <input id="applyUsername" value="${tgUser.username ? '@' + tgUser.username : ''}" ${canEditUsername ? '' : 'disabled'}>
       </div>
       <div class="form-field">
         <label>Номер телефона</label>
@@ -459,6 +460,7 @@ function applyGoToContacts() {
 async function submitApplication() {
   const name = document.getElementById('applyName').value.trim();
   const phone = document.getElementById('applyPhone').value.trim();
+  const usernameOverride = document.getElementById('applyUsername').value.trim();
   if (!name || !phone) {
     tg.showAlert('Заполните имя и телефон.');
     return;
@@ -473,7 +475,7 @@ async function submitApplication() {
       trainerId: applyState.trainerId,
       group: applyState.group,
       availability: applyState.availability,
-      name, phone,
+      name, phone, usernameOverride,
     }),
   });
   const data = await res.json();
@@ -490,31 +492,58 @@ async function submitApplication() {
 async function loadMySchedule() {
   const list = await fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json());
   const el = document.getElementById('myScheduleList');
-  el.innerHTML = list.length
-    ? list.map(c => `
-        <div class="class-item">
+
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">Пока нет подтверждённых занятий. Отправьте заявку во вкладке «Запись».</div>';
+    return;
+  }
+
+  if (isTrainer) {
+    // У тренера/админа на каждом занятии сразу виден список участников
+    el.innerHTML = list.map(c => {
+      const participants = (c.participants || []).length
+        ? c.participants.map(p => `<div class="app-summary-line">• ${p.name}${p.group ? ' — ' + p.group : ''}</div>`).join('')
+        : '<div class="app-summary-line">Пока никто не записан</div>';
+      return `
+        <div class="class-item" style="flex-direction:column;align-items:stretch">
           <div class="info">
-            <div class="day-time">${c.dayLabel} ${c.time}, зал ${c.room}</div>
-            <div class="type">${c.direction} — тренер ${c.trainerName}</div>
+            <div class="day-time">${c.dayLabel} ${c.time}</div>
+            <div class="type">${c.direction}${c.group ? ' — ' + c.group : ''}</div>
           </div>
+          <div style="margin-top:6px">${participants}</div>
         </div>
-      `).join('')
-    : '<div class="empty">Пока нет подтверждённых занятий. Отправьте заявку во вкладке «Запись».</div>';
+      `;
+    }).join('');
+    return;
+  }
+
+  el.innerHTML = list.map(c => `
+    <div class="class-item">
+      <div class="info">
+        <div class="day-time">${c.dayLabel} ${c.time}</div>
+        <div class="type">${c.direction} — тренер ${c.trainerName}</div>
+      </div>
+    </div>
+  `).join('');
 }
 
 // ===================== Админ-режим: вкладки, тренеры, направления, занятия, календарь =====================
 let isAdmin = false;
+let isTrainer = false;
 
 async function initApp() {
   directionsCache = await fetch('/api/directions').then(r => r.json());
-  await initApplyTab();
 
   try {
     const me = await fetch('/api/me?initData=' + encodeURIComponent(initData)).then(r => r.json());
     isAdmin = !!me.isAdmin;
+    isTrainer = !!me.isTrainer;
   } catch (e) {
     isAdmin = false;
+    isTrainer = false;
   }
+
+  await initApplyTab();
   if (isAdmin) buildAdminTabs();
 
   // Если тренер/админ перешёл по кнопке из уведомления о конкретной заявке — сразу открываем её
@@ -628,6 +657,13 @@ async function addDirection() {
 // ---------- Заявки (админ) ----------
 let assignState = null;
 
+function appConfirmedClassIds(a) {
+  const ids = new Set();
+  (a.confirmedClassIds || []).forEach(id => ids.add(String(id)));
+  if (a.confirmedClassId) ids.add(String(a.confirmedClassId));
+  return [...ids];
+}
+
 function appInfoCard(a) {
   const availabilityText = APP_WEEKDAYS
     .map(([k, l]) => {
@@ -636,20 +672,52 @@ function appInfoCard(a) {
     })
     .filter(Boolean).join('<br>') || '—';
 
-  let actions = '';
-  if (a.confirmedClassId && a.status !== 'confirmed') {
-    actions = `<button class="primary-btn" style="width:100%;margin-top:8px" onclick="sendApplicationConfirmation()">✅ Подтвердить занятие и отправить участнику</button>`;
+  const assignedIds = appConfirmedClassIds(a);
+  const assignedClasses = (assignState.agenda || []).filter(c => assignedIds.includes(String(c._id)));
+  // Занятия из других дней/залов агенда не хранит — подтягиваем из общего кэша, если есть
+  const knownClasses = window._allAssignedClassesCache && window._allAssignedClassesCache[a._id]
+    ? window._allAssignedClassesCache[a._id]
+    : assignedClasses;
+
+  let comparisonBlock = '';
+  if (assignedIds.length) {
+    const rows = knownClasses.map(cls => `
+      <p class="app-summary-line">${appDayLabel(cls.day)} ${cls.time} — ${cls.direction} (${cls.group || 'без группы'}), тренер: ${cls.trainerName}</p>
+    `).join('');
+    comparisonBlock = `
+      <hr style="border:none;border-top:1px solid var(--border-soft);margin:10px 0">
+      <p class="app-summary-line" style="color:var(--text-primary)">Оформлено администратором (сверьте перед отправкой):</p>
+      ${rows || '<p class="app-summary-line">Загрузка…</p>'}
+    `;
+  }
+
+  let actions = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">`;
+  actions += `<button class="wizard-opt" onclick="assignGoToDay()">📅 Создать запись</button>`;
+  if (assignedIds.length) {
+    actions += `<button class="wizard-opt" onclick="assignGoToDay()">➕ Добавить занятие</button>`;
+  }
+  if (a.status !== 'confirmed' && a.status !== 'no_slots') {
+    actions += `<button class="wizard-opt" onclick="sendNoSlotsFeedback()">🚫 Нет свободных часов</button>`;
+  }
+  actions += `</div>`;
+
+  if (assignedIds.length && a.status !== 'confirmed') {
+    actions += `<button class="primary-btn" style="width:100%;margin-top:8px" onclick="sendApplicationConfirmation()">✅ Подтвердить занятие(-я) и отправить участнику</button>`;
   } else if (a.status === 'confirmed') {
-    actions = `<p class="app-summary-line" style="color:var(--accent-pink);margin-top:8px">✅ Участнику уже отправлено подтверждение</p>`;
+    actions += `<p class="app-summary-line" style="color:var(--accent-pink);margin-top:8px">✅ Участнику уже отправлено подтверждение</p>`;
+  } else if (a.status === 'no_slots') {
+    actions += `<p class="app-summary-line" style="color:var(--accent-pink);margin-top:8px">🚫 Участнику отправлено: нет свободных часов</p>`;
   }
   actions += `<button class="wizard-opt" style="margin-top:8px" onclick="deleteApplication()">🗑 Удалить заявку</button>`;
 
   return `
+    <button class="wizard-back" onclick="closeAssign()">← ко всем заявкам</button>
     <div class="status-card">
       <div class="title">${a.name} (${a.username ? '@' + a.username : a.phone})</div>
       <p class="app-summary-line">Направление: ${a.direction}, группа: ${a.group}</p>
       <p class="app-summary-line">Тренер в заявке: ${a.trainerName || 'не выбран'}</p>
       <p class="app-summary-line" style="margin-top:6px">Удобное время:<br>${availabilityText}</p>
+      ${comparisonBlock}
       ${actions}
     </div>
   `;
@@ -658,6 +726,22 @@ function appInfoCard(a) {
 async function refreshCurrentApplication() {
   assignState.application = await fetch(
     `/api/admin/applications/${assignState.application._id}?initData=${encodeURIComponent(initData)}`
+  ).then(r => r.json());
+  await loadAssignedClassesCache();
+}
+
+// Подтягиваем все занятия, назначенные текущей заявке (может быть несколько, в разных
+// днях/залах) — используется в карточке "Оформлено администратором" для сверки
+async function loadAssignedClassesCache() {
+  const a = assignState.application;
+  const ids = appConfirmedClassIds(a);
+  window._allAssignedClassesCache = window._allAssignedClassesCache || {};
+  if (!ids.length) {
+    window._allAssignedClassesCache[a._id] = [];
+    return;
+  }
+  window._allAssignedClassesCache[a._id] = await fetch(
+    `/api/admin/classes/by-ids?initData=${encodeURIComponent(initData)}&ids=${ids.join(',')}`
   ).then(r => r.json());
 }
 
@@ -678,22 +762,44 @@ async function sendApplicationConfirmation() {
   }
 }
 
+function sendNoSlotsFeedback() {
+  tg.showConfirm('Отправить участнику сообщение о том, что свободных часов нет?', async (ok) => {
+    if (!ok) return;
+    const res = await fetch(`/api/admin/applications/${assignState.application._id}/no-slots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      tg.HapticFeedback.notificationOccurred('success');
+      tg.showAlert('Отправлено участнику.');
+      await refreshCurrentApplication();
+      renderAssignPanel();
+    } else {
+      tg.showAlert('Не получилось отправить.');
+    }
+  });
+}
+
 function deleteApplication() {
   tg.showConfirm('Удалить эту заявку? Действие необратимо.', async (ok) => {
     if (!ok) return;
     await fetch(`/api/admin/applications/${assignState.application._id}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
     tg.HapticFeedback.notificationOccurred('success');
-    assignState = null;
-    document.getElementById('assignPanel').innerHTML = '';
-    loadApplications();
+    closeAssign();
   });
 }
 
 async function loadApplications() {
   const apps = await fetch('/api/admin/applications?initData=' + encodeURIComponent(initData)).then(r => r.json());
-  const el = document.getElementById('applicationsList');
-  document.getElementById('assignPanel').innerHTML = '';
+  window._applications = apps;
+  renderApplicationsList();
+}
 
+function renderApplicationsList() {
+  const apps = window._applications || [];
+  const el = document.getElementById('applicationsList');
   el.innerHTML = apps.length
     ? apps.map(a => `
         <div class="class-item" style="cursor:pointer" onclick="openAssign('${a._id}')">
@@ -704,18 +810,26 @@ async function loadApplications() {
         </div>
       `).join('')
     : '<div class="empty" style="margin-top:0">Новых заявок нет</div>';
-
-  window._applications = apps;
 }
 
-function openAssign(appId) {
+// Пока открыта конкретная заявка — список остальных заявок скрыт, чтобы не мешал (был баг)
+async function openAssign(appId) {
   const application = (window._applications || []).find(a => a._id === appId);
   if (!application) return;
+  document.getElementById('applicationsList').style.display = 'none';
   assignState = {
     application, phase: 'info', day: null, room: null, agenda: [],
     editingClassId: null, editingField: null, newSlotTime: null, newSlotDraft: {},
   };
+  await loadAssignedClassesCache();
   renderAssignPanel();
+}
+
+function closeAssign() {
+  assignState = null;
+  document.getElementById('assignPanel').innerHTML = '';
+  document.getElementById('applicationsList').style.display = '';
+  loadApplications();
 }
 
 function renderAssignPanel() {
@@ -723,9 +837,7 @@ function renderAssignPanel() {
   const a = assignState.application;
   let html = appInfoCard(a);
 
-  if (assignState.phase === 'info') {
-    html += `<button class="primary-btn" style="width:100%;margin-top:10px" onclick="assignGoToDay()">Создать запись</button>`;
-  } else if (assignState.phase === 'day') {
+  if (assignState.phase === 'day') {
     html += '<button class="wizard-back" onclick="assignBackToInfo()">← назад</button>';
     html += '<div class="wizard-step-label">Выберите день</div><div class="wizard-options">' +
       APP_WEEKDAYS.map(([k, l]) => `<button class="wizard-opt" onclick="assignGoToRoom('${k}')">${l}</button>`).join('') +
