@@ -90,6 +90,21 @@
   }
   .tab-btn.active { background: var(--accent-pink); border-color: var(--accent-pink); color: #fff; }
 
+  .subtabbar { margin: 4px 0 18px; }
+  .subtab-btn {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--border-soft);
+    color: var(--text-secondary);
+    border-radius: 20px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .subtab-btn.active { background: var(--bg-card); border-color: var(--accent-pink); color: var(--accent-pink); }
+  .placeholder-note { color: var(--text-secondary); font-size: 13px; margin-top: 12px; }
+
   .admin-form { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
   .admin-form input {
     background: var(--bg-card);
@@ -231,42 +246,52 @@
     <div id="assignPanel"></div>
   </div>
 
-  <div id="tab-trainers" class="tab-panel" style="display:none">
-    <h1>Тренеры</h1>
-    <div id="trainersList" class="class-list"></div>
-    <div class="admin-form">
-      <input id="trainerIdInput" placeholder="Telegram ID тренера">
-      <input id="trainerNameInput" placeholder="Имя тренера">
-      <input id="trainerUsernameInput" placeholder="Никнейм тренера (без @)">
-      <button class="primary-btn" onclick="addTrainer()">Добавить тренера</button>
-    </div>
-  </div>
-
-  <div id="tab-directions" class="tab-panel" style="display:none">
-    <h1>Направления</h1>
-    <div id="directionsList" class="class-list"></div>
-    <div class="admin-form">
-      <input id="directionNameInput" placeholder="Название направления">
-      <button class="primary-btn" onclick="addDirection()">Добавить</button>
-    </div>
-  </div>
-
   <div id="tab-classes" class="tab-panel" style="display:none">
     <h1>Добавить занятие</h1>
     <div id="classClearAllBox"></div>
     <div id="classWizard"></div>
   </div>
 
-  <div id="tab-calendar" class="tab-panel" style="display:none">
-    <h1>Календарь</h1>
-    <div class="cal-header">
-      <button onclick="calPrevMonth()">‹</button>
-      <span id="calMonthLabel"></span>
-      <button onclick="calNextMonth()">›</button>
+  <div id="tab-admin" class="tab-panel" style="display:none">
+    <h1>Админка</h1>
+    <div class="tabbar subtabbar" id="adminSubtabbar"></div>
+
+    <div id="subtab-trainers" class="subtab-panel" style="display:none">
+      <div id="trainersList" class="class-list"></div>
+      <div class="admin-form">
+        <input id="trainerIdInput" placeholder="Telegram ID тренера">
+        <input id="trainerNameInput" placeholder="Имя тренера">
+        <input id="trainerUsernameInput" placeholder="Никнейм тренера (без @)">
+        <button class="primary-btn" onclick="addTrainer()">Добавить тренера</button>
+      </div>
     </div>
-    <div class="cal-weekdays"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div>
-    <div class="cal-grid" id="calGrid"></div>
-    <div id="calAgenda"></div>
+
+    <div id="subtab-directions" class="subtab-panel" style="display:none">
+      <div id="directionsList" class="class-list"></div>
+      <div class="admin-form">
+        <input id="directionNameInput" placeholder="Название направления">
+        <button class="primary-btn" onclick="addDirection()">Добавить</button>
+      </div>
+    </div>
+
+    <div id="subtab-calendar" class="subtab-panel" style="display:none">
+      <div class="cal-header">
+        <button onclick="calPrevMonth()">‹</button>
+        <span id="calMonthLabel"></span>
+        <button onclick="calNextMonth()">›</button>
+      </div>
+      <div class="cal-weekdays"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div id="calAgenda"></div>
+    </div>
+
+    <div id="subtab-participants" class="subtab-panel" style="display:none">
+      <p class="placeholder-note">Раздел «Список участников» — наполним на следующем шаге.</p>
+    </div>
+
+    <div id="subtab-events" class="subtab-panel" style="display:none">
+      <p class="placeholder-note">Раздел «Мероприятия» — наполним на следующем шаге.</p>
+    </div>
   </div>
 </div>
 
@@ -578,19 +603,41 @@ function buildAdminTabs() {
   const bar = document.getElementById('tabbar');
   const tabs = [
     { id: 'applications', label: 'Заявки' },
-    { id: 'directions', label: 'Направления' },
     { id: 'classes', label: 'Занятия' },
-    { id: 'calendar', label: 'Календарь' },
+    { id: 'admin', label: 'Админка' },
   ];
-  if (isAdmin) {
-    tabs.splice(1, 0, { id: 'trainers', label: 'Тренеры' });
-  }
   tabs.forEach(t => {
     const btn = document.createElement('button');
     btn.className = 'tab-btn';
     btn.dataset.tab = t.id;
     btn.textContent = t.label;
     btn.onclick = () => switchTab(t.id);
+    bar.appendChild(btn);
+  });
+  buildAdminSubtabs();
+}
+
+const ADMIN_SUBTABS_ALL = [
+  { id: 'trainers', label: 'Тренеры', adminOnly: true },
+  { id: 'directions', label: 'Направления', adminOnly: false },
+  { id: 'calendar', label: 'Календарь', adminOnly: false },
+  { id: 'participants', label: 'Участники', adminOnly: false },
+  { id: 'events', label: 'Мероприятия', adminOnly: true },
+];
+
+function currentAdminSubtabs() {
+  return ADMIN_SUBTABS_ALL.filter(t => !t.adminOnly || isAdmin);
+}
+
+function buildAdminSubtabs() {
+  const bar = document.getElementById('adminSubtabbar');
+  bar.innerHTML = '';
+  currentAdminSubtabs().forEach(t => {
+    const btn = document.createElement('button');
+    btn.className = 'subtab-btn';
+    btn.dataset.subtab = t.id;
+    btn.textContent = t.label;
+    btn.onclick = () => switchAdminSubtab(t.id);
     bar.appendChild(btn);
   });
 }
@@ -602,10 +649,18 @@ function switchTab(tabId) {
   if (tabId === 'schedule') initApplyTab();
   else if (tabId === 'myschedule') loadMySchedule();
   else if (tabId === 'applications') loadApplications();
-  else if (tabId === 'trainers' && isAdmin) loadTrainers();
-  else if (tabId === 'directions') loadDirections();
   else if (tabId === 'classes') startClassWizard();
-  else if (tabId === 'calendar') initCalendar();
+  else if (tabId === 'admin') switchAdminSubtab(currentAdminSubtabs()[0].id);
+}
+
+function switchAdminSubtab(subId) {
+  document.querySelectorAll('.subtab-panel').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.subtab-btn').forEach(b => b.classList.toggle('active', b.dataset.subtab === subId));
+  document.getElementById('subtab-' + subId).style.display = 'block';
+  if (subId === 'trainers' && isAdmin) loadTrainers();
+  else if (subId === 'directions') loadDirections();
+  else if (subId === 'calendar') initCalendar();
+  // 'participants' и 'events' — наполним на следующих шагах
 }
 
 async function loadTrainers() {
