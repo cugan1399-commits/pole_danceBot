@@ -243,6 +243,7 @@
     <div class="admin-form">
       <input id="trainerIdInput" placeholder="Telegram ID тренера">
       <input id="trainerNameInput" placeholder="Имя тренера">
+      <input id="trainerUsernameInput" placeholder="Никнейм тренера (без @)">
       <button class="primary-btn" onclick="addTrainer()">Добавить тренера</button>
     </div>
   </div>
@@ -295,6 +296,12 @@ function appDayLabel(key) {
   return found ? found[1] : key;
 }
 
+function formatTrainerName(name, username) {
+  if (!name) return 'Неизвестно';
+  const cleanUsername = username ? username.replace(/^@/, '') : null;
+  return cleanUsername ? `${name} (@${cleanUsername})` : name;
+}
+
 // ---------- "Запись" (анкета-заявка) ----------
 let applyState = { step: 'loading', direction: null, trainerId: null, trainerName: null, group: null, availability: [] };
 let directionsCache = [];
@@ -325,7 +332,6 @@ function renderApplyStatus(pending, hasConfirmed) {
       <p class="app-summary-line">Тренер: ${pending.trainerName || 'ещё не выбран — решит админ'}</p>
       <p style="margin-top:10px;color:var(--text-secondary)">Тренер свяжется и подтвердит время. Как только вас запишут — придёт сообщение, а занятие появится во вкладке «Моё расписание».</p>
     </div>
-    ${hasConfirmed ? '' : ''}
     <button class="primary-btn" style="margin-top:8px" onclick="switchTab('myschedule')">Моё расписание</button>
   `;
 }
@@ -342,9 +348,10 @@ function renderApplyWizard() {
   }
 
   if (applyState.step === 'trainer') {
-    const options = trainersCache.map(t =>
-      `<button class="wizard-opt" onclick="applyPickTrainer(${t.telegramId}, '${t.name.replace(/'/g, "\\'")}')">${t.name}</button>`
-    ).join('');
+    const options = trainersCache.map(t => {
+      const displayName = formatTrainerName(t.name || t.rawName, t.username);
+      return `<button class="wizard-opt" onclick="applyPickTrainer(${t.telegramId}, '${displayName.replace(/'/g, "\\'")}')">${displayName}</button>`;
+    }).join('');
     root.innerHTML = '<button class="wizard-back" onclick="applyBack()">← назад</button>' +
       `<div class="wizard-step-label">${applyState.direction} — выберите тренера</div><div class="wizard-options">` +
       options +
@@ -500,7 +507,6 @@ async function loadMySchedule() {
   }
 
   if (isTrainer) {
-    // У тренера/админа на каждом занятии сразу виден список участников
     el.innerHTML = list.map(c => {
       const participants = (c.participants || []).length
         ? c.participants.map(p => `<div class="app-summary-line">• ${p.name}${p.group ? ' — ' + p.group : ''}</div>`).join('')
@@ -522,13 +528,13 @@ async function loadMySchedule() {
     <div class="class-item">
       <div class="info">
         <div class="day-time">${c.dayLabel} ${c.time}</div>
-        <div class="type">${c.direction} — тренер ${c.trainerName}</div>
+        <div class="type">${c.direction} — тренер ${formatTrainerName(c.trainerName, c.trainerUsername)}</div>
       </div>
     </div>
   `).join('');
 }
 
-// ===================== Админ-режим: вкладки, тренеры, направления, занятия, календарь =====================
+// ===================== Админ-режим =====================
 let isAdmin = false;
 let isTrainer = false;
 
@@ -547,7 +553,6 @@ async function initApp() {
   await initApplyTab();
   if (isAdmin) buildAdminTabs();
 
-  // Если тренер/админ перешёл по кнопке из уведомления о конкретной заявке — сразу открываем её
   const wantedAppId = new URLSearchParams(location.search).get('app');
   if (isAdmin && wantedAppId) {
     switchTab('applications');
@@ -591,31 +596,36 @@ async function loadTrainers() {
   const list = await fetch('/api/admin/trainers?initData=' + encodeURIComponent(initData)).then(r => r.json());
   const el = document.getElementById('trainersList');
   el.innerHTML = list.length
-    ? list.map(t => `
-        <div class="class-item">
-          <div class="info">
-            <div class="day-time">${t.name}</div>
-            <div class="type">ID: ${t.telegramId}</div>
+    ? list.map(t => {
+        const displayName = formatTrainerName(t.name, t.username);
+        return `
+          <div class="class-item">
+            <div class="info">
+              <div class="day-time">${displayName}</div>
+              <div class="type">ID: ${t.telegramId}</div>
+            </div>
           </div>
-        </div>
-      `).join('')
+        `;
+      }).join('')
     : '<div class="empty" style="margin-top:0">Пока нет тренеров</div>';
 }
 
 async function addTrainer() {
   const telegramId = document.getElementById('trainerIdInput').value.trim();
   const name = document.getElementById('trainerNameInput').value.trim();
-  if (!telegramId || !name) return tg.showAlert('Заполни оба поля.');
+  const username = document.getElementById('trainerUsernameInput').value.trim();
+  if (!telegramId || !name) return tg.showAlert('Заполни поля ID и Имя.');
 
   const res = await fetch('/api/admin/trainers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, telegramId, name })
+    body: JSON.stringify({ initData, telegramId, name, username })
   });
   const data = await res.json();
   if (data.ok) {
     document.getElementById('trainerIdInput').value = '';
     document.getElementById('trainerNameInput').value = '';
+    document.getElementById('trainerUsernameInput').value = '';
     tg.HapticFeedback.notificationOccurred('success');
     loadTrainers();
   } else {
@@ -675,7 +685,6 @@ function appInfoCard(a) {
 
   const assignedIds = appConfirmedClassIds(a);
   const assignedClasses = (assignState.agenda || []).filter(c => assignedIds.includes(String(c._id)));
-  // Занятия из других дней/залов агенда не хранит — подтягиваем из общего кэша, если есть
   const knownClasses = window._allAssignedClassesCache && window._allAssignedClassesCache[a._id]
     ? window._allAssignedClassesCache[a._id]
     : assignedClasses;
@@ -683,7 +692,7 @@ function appInfoCard(a) {
   let comparisonBlock = '';
   if (assignedIds.length) {
     const rows = knownClasses.map(cls => `
-      <p class="app-summary-line">${appDayLabel(cls.day)} ${cls.time} — ${cls.direction} (${cls.group || 'без группы'}), тренер: ${cls.trainerName}</p>
+      <p class="app-summary-line">${appDayLabel(cls.day)} ${cls.time} — ${cls.direction} (${cls.group || 'без группы'}), тренер: ${formatTrainerName(cls.trainerName, cls.trainerUsername)}</p>
     `).join('');
     comparisonBlock = `
       <hr style="border:none;border-top:1px solid var(--border-soft);margin:10px 0">
@@ -731,8 +740,6 @@ async function refreshCurrentApplication() {
   await loadAssignedClassesCache();
 }
 
-// Подтягиваем все занятия, назначенные текущей заявке (может быть несколько, в разных
-// днях/залах) — используется в карточке "Оформлено администратором" для сверки
 async function loadAssignedClassesCache() {
   const a = assignState.application;
   const ids = appConfirmedClassIds(a);
@@ -813,7 +820,6 @@ function renderApplicationsList() {
     : '<div class="empty" style="margin-top:0">Новых заявок нет</div>';
 }
 
-// Пока открыта конкретная заявка — список остальных заявок скрыт, чтобы не мешал (был баг)
 async function openAssign(appId) {
   const application = (window._applications || []).find(a => a._id === appId);
   if (!application) return;
@@ -892,7 +898,7 @@ function renderClassRow(cls, h) {
   let row = `<div class="agenda-row"><span class="agenda-time">${h}</span>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','group')">${cls.group || 'Группа?'}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','direction')">${cls.direction}</button>`;
-  row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','trainer')">${cls.trainerName}</button>`;
+  row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','trainer')">${formatTrainerName(cls.trainerName, cls.trainerUsername)}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','participants')">Участники (${cls.participants.length})</button>`;
   row += `<button class="wizard-opt" onclick="assignDeleteClass('${cls._id}')">🗑</button>`;
   row += '</div>';
@@ -924,7 +930,10 @@ function renderInlineEditor(cls) {
   }
   if (assignState.editingField === 'trainer') {
     return '<div class="wizard-options" style="margin:6px 0 12px">' +
-      trainersCache.map(t => `<button class="wizard-opt" onclick="assignPatchClass('${cls._id}','trainerId',${t.telegramId})">${t.name}</button>`).join('') + '</div>';
+      trainersCache.map(t => {
+        const displayName = formatTrainerName(t.name || t.rawName, t.username);
+        return `<button class="wizard-opt" onclick="assignPatchClass('${cls._id}','trainerId',${t.telegramId})">${displayName}</button>`;
+      }).join('') + '</div>';
   }
   if (assignState.editingField === 'participants') {
     const already = cls.participants.some(p => p.chatId === a.chatId);
@@ -1003,7 +1012,10 @@ function renderNewSlotRow(h) {
   }
   if (!draft.trainerId) {
     row += '<div class="wizard-options" style="margin:6px 0 12px">' +
-      trainersCache.map(t => `<button class="wizard-opt" onclick="assignNewSlotPick('trainerId',${t.telegramId})">${t.name}</button>`).join('') + '</div>';
+      trainersCache.map(t => {
+        const displayName = formatTrainerName(t.name || t.rawName, t.username);
+        return `<button class="wizard-opt" onclick="assignNewSlotPick('trainerId',${t.telegramId})">${displayName}</button>`;
+      }).join('') + '</div>';
     return row;
   }
   row += `<button class="primary-btn" style="width:100%;margin:6px 0 12px" onclick="assignCreateNewSlot('${h}')">Создать и записать ${assignState.application.name}</button>`;
@@ -1030,10 +1042,6 @@ async function assignCreateNewSlot(time) {
     await refreshCurrentApplication();
     await loadAgenda();
   } else {
-    // Слот мог быть занят кем-то другим уже ПОСЛЕ того, как мы открыли эту агенду —
-    // раньше список не обновлялся, и кнопка "+ Добавить запись" продолжала висеть
-    // как будто время свободно, хотя на сервере оно уже занято. Обновляем агенду,
-    // чтобы сразу стало видно, чьё это занятие.
     assignState.newSlotTime = null;
     await loadAgenda();
     if (data.error === 'slot_taken' && data.existing) {
@@ -1064,8 +1072,6 @@ function dayLabel(key) {
 
 let wizardState = {};
 
-// ВРЕМЕННО: кнопка полной очистки занятий — чтобы разобраться с багом "слот занят,
-// хотя нигде не видно". Уберём, когда разберёмся окончательно. Видна только владельцу.
 function renderClearAllBox() {
   const box = document.getElementById('classClearAllBox');
   if (!box) return;
@@ -1158,7 +1164,10 @@ async function renderWizard() {
     const trainers = await fetch('/api/admin/trainers?initData=' + encodeURIComponent(initData)).then(r => r.json());
     el.innerHTML = backButtonHtml() +
       `<div class="wizard-step-label">${wizardState.direction} — кто ведёт?</div><div class="wizard-options">` +
-      trainers.map(t => `<button class="wizard-opt" onclick="pickTrainer(${t.telegramId})">${t.name}</button>`).join('') +
+      trainers.map(t => {
+        const displayName = formatTrainerName(t.name, t.username);
+        return `<button class="wizard-opt" onclick="pickTrainer(${t.telegramId})">${displayName}</button>`;
+      }).join('') +
       '</div>';
     return;
   }
@@ -1204,84 +1213,68 @@ function renderCalendarMonth() {
   document.getElementById('calMonthLabel').textContent = MONTH_NAMES[calDate.getMonth()] + ' ' + calDate.getFullYear();
   const grid = document.getElementById('calGrid');
   grid.innerHTML = '';
-
+  
   const year = calDate.getFullYear();
   const month = calDate.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const startOffset = (firstDay.getDay() + 6) % 7; // 0 = понедельник
+  const firstDayIndex = (new Date(year, month, 1).getDay() + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const daysInPrevMonth = new Date(year, month, 0).getDate();
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const prevMonthDays = new Date(year, month, 0).getDate();
 
-  for (let i = 0; i < startOffset; i++) {
+  for (let i = firstDayIndex - 1; i >= 0; i--) {
     const cell = document.createElement('div');
     cell.className = 'cal-cell other-month';
-    cell.textContent = daysInPrevMonth - startOffset + i + 1;
+    cell.textContent = prevMonthDays - i;
     grid.appendChild(cell);
   }
+
+  const todayStr = new Date().toISOString().split('T')[0];
 
   for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const cell = document.createElement('div');
+    const fullDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     cell.className = 'cal-cell';
-    if (dateStr === todayStr) cell.classList.add('today');
-    if (dateStr === calSelectedDate) cell.classList.add('selected');
-    cell.textContent = d;
-    cell.onclick = () => selectCalendarDate(dateStr, cell);
-    grid.appendChild(cell);
-  }
+    if (fullDateStr === todayStr) cell.classList.add('today');
+    if (fullDateStr === calSelectedDate) cell.classList.add('selected');
 
-  const totalCells = startOffset + daysInMonth;
-  const trailing = (7 - (totalCells % 7)) % 7;
-  for (let i = 1; i <= trailing; i++) {
-    const cell = document.createElement('div');
-    cell.className = 'cal-cell other-month';
-    cell.textContent = i;
+    cell.textContent = d;
+    cell.onclick = () => selectCalendarDate(fullDateStr, cell);
     grid.appendChild(cell);
   }
 }
 
-function calPrevMonth() { calDate.setMonth(calDate.getMonth() - 1); renderCalendarMonth(); }
-function calNextMonth() { calDate.setMonth(calDate.getMonth() + 1); renderCalendarMonth(); }
+function calPrevMonth() {
+  calDate.setMonth(calDate.getMonth() - 1);
+  renderCalendarMonth();
+}
+
+function calNextMonth() {
+  calDate.setMonth(calDate.getMonth() + 1);
+  renderCalendarMonth();
+}
 
 async function selectCalendarDate(dateStr, cellEl) {
   calSelectedDate = dateStr;
   document.querySelectorAll('.cal-cell').forEach(c => c.classList.remove('selected'));
-  cellEl.classList.add('selected');
+  if (cellEl) cellEl.classList.add('selected');
 
-  const agenda = document.getElementById('calAgenda');
-  agenda.innerHTML = '<div class="empty" style="margin-top:12px">Загрузка...</div>';
+  const res = await fetch(`/api/admin/calendar?initData=${encodeURIComponent(initData)}&date=${dateStr}`);
+  const data = await res.json();
+  const agendaEl = document.getElementById('calAgenda');
 
-  const data = await fetch('/api/admin/calendar?initData=' + encodeURIComponent(initData) + '&date=' + dateStr).then(r => r.json());
   if (!data.classes || !data.classes.length) {
-    agenda.innerHTML = '<div class="empty" style="margin-top:12px">На этот день занятий нет</div>';
+    agendaEl.innerHTML = `<div class="empty" style="margin-top:20px">На ${dateStr} занятий нет</div>`;
     return;
   }
-  agenda.innerHTML = data.classes.map(c => `
+
+  agendaEl.innerHTML = data.classes.map(c => `
     <div class="cal-agenda-item">
-      <div style="font-weight:500">${c.time} — зал ${c.room} — ${c.direction}</div>
-      <div style="color:var(--text-secondary); margin-top:2px">Тренер: ${c.trainerName}</div>
-      <div style="color:var(--text-secondary); margin-top:4px">${c.participants.length ? c.participants.map(p => '@' + p.username).join(', ') : 'пока никто не записан'}</div>
+      <div><b>${c.time}</b> — ${c.direction} (${formatTrainerName(c.trainerName, c.trainerUsername)}) — Зал ${c.room}</div>
+      <div style="color:var(--text-secondary);margin-top:4px">Участников: ${c.participants.length}</div>
     </div>
   `).join('');
 }
 
-// Свайп влево/вправо по сетке календаря — смена месяца
-let calTouchStartX = null;
-document.getElementById('calGrid').addEventListener('touchstart', e => {
-  calTouchStartX = e.touches[0].clientX;
-});
-document.getElementById('calGrid').addEventListener('touchend', e => {
-  if (calTouchStartX === null) return;
-  const dx = e.changedTouches[0].clientX - calTouchStartX;
-  if (Math.abs(dx) > 40) {
-    if (dx < 0) calNextMonth(); else calPrevMonth();
-  }
-  calTouchStartX = null;
-});
-
-initApp();
+window.addEventListener('DOMContentLoaded', initApp);
 </script>
-
 </body>
 </html>
