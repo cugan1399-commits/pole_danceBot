@@ -347,16 +347,22 @@ function renderApplyWizard() {
     return;
   }
 
-  if (applyState.step === 'trainer') {
+if (applyState.step === 'trainer') {
     const options = trainersCache.map(t => {
+      // Использование экранирования кавычек и проверка данных тренера
       const displayName = formatTrainerName(t.name || t.rawName, t.username);
-      return `<button class="wizard-opt" onclick="applyPickTrainer(${t.telegramId}, '${displayName.replace(/'/g, "\\'")}')">${displayName}</button>`;
+      const safeName = displayName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return `<button class="wizard-opt" onclick="applyPickTrainer(${t.telegramId}, '${safeName}')">${displayName}</button>`;
     }).join('');
-    root.innerHTML = '<button class="wizard-back" onclick="applyBack()">← назад</button>' +
-      `<div class="wizard-step-label">${applyState.direction} — выберите тренера</div><div class="wizard-options">` +
-      options +
-      `<button class="wizard-opt" onclick="applyPickTrainer(null, null)">Не знаю тренера</button>` +
-      '</div>';
+
+    root.innerHTML = `
+      <button class="wizard-back" onclick="applyBack()">← назад</button>
+      <div class="wizard-step-label">${applyState.direction} — выберите тренера</div>
+      <div class="wizard-options">
+        ${options}
+        <button class="wizard-opt" onclick="applyPickTrainer(null, null)">Не знаю тренера</button>
+      </div>
+    `;
     return;
   }
 
