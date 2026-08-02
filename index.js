@@ -375,6 +375,30 @@ app.get('/api/trainers', async (req, res) => {
     username: t.username || null 
   })));
 });
+app.delete('/api/trainers/:id', async (req, res) => {
+  try {
+    // Получаем telegramId из параметров URL и приводим к числу
+    const telegramId = parseInt(req.params.id, 10);
+
+    if (isNaN(telegramId)) {
+      return res.status(400).json({ error: 'Некорректный ID тренера' });
+    }
+
+    // Удаляем документ тренера из коллекции MongoDB
+    const result = await db.collection('trainers').deleteOne({ telegramId: telegramId });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'Тренер не найден в базе данных' });
+    }
+
+    console.log(`Тренер с telegramId ${telegramId} успешно удален`);
+    res.json({ success: true, message: 'Тренер удален' });
+
+  } catch (error) {
+    console.error('Ошибка при удалении тренера:', error);
+    res.status(500).json({ error: 'Ошибка сервера при удалении тренера' });
+  }
+});
 
 function formatAvailability(list) {
   const byDay = {};

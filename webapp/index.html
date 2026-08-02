@@ -135,8 +135,20 @@
     cursor: pointer;
   }
 
-  .wizard-step-label { color: var(--text-secondary); font-size: 13px; margin: 0 0 10px; }
+.wizard-step-label { color: var(--text-secondary); font-size: 13px; margin: 0 0 10px; }
   .wizard-options { display: flex; flex-wrap: wrap; gap: 8px; }
+  
+  /* Контейнер для строки "Тренер + Кнопка удаления" */
+  .wizard-opt-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+  }
+  .wizard-opt-row .wizard-opt {
+    flex: 1;
+  }
+
   .wizard-opt {
     background: var(--bg-card);
     border: 1px solid var(--border-soft);
@@ -148,6 +160,26 @@
     cursor: pointer;
   }
   .wizard-opt:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Стили для кнопки удаления */
+  .wizard-opt-delete {
+    background: rgba(255, 77, 77, 0.12);
+    border: 1px solid rgba(255, 77, 77, 0.3);
+    color: #ff4d4d;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+  }
+  .wizard-opt-delete:hover {
+    background: #ff4d4d;
+    color: #ffffff;
+  }
+
   .wizard-back { margin-bottom: 12px; background: transparent; border: none; color: var(--text-secondary); font-size: 13px; font-family: inherit; cursor: pointer; padding: 0; }
 
   .cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -352,7 +384,24 @@ if (applyState.step === 'trainer') {
       // Использование экранирования кавычек и проверка данных тренера
       const displayName = formatTrainerName(t.name || t.rawName, t.username);
       const safeName = displayName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-      return `<button class="wizard-opt" onclick="applyPickTrainer(${t.telegramId}, '${safeName}')">${displayName}</button>`;
+
+      // Кнопка удаления рендерится только для админа
+      const deleteBtnHtml = isAdmin ? `
+        <button class="wizard-opt-delete" 
+                onclick="event.stopPropagation(); deleteTrainer(${t.telegramId}, '${safeName}')"
+                title="Удалить тренера">
+          🗑️
+        </button>
+      ` : '';
+
+      return `
+        <div class="wizard-opt-row">
+          <button class="wizard-opt" onclick="applyPickTrainer(${t.telegramId}, '${safeName}')">
+            ${displayName}
+          </button>
+          ${deleteBtnHtml}
+        </div>
+      `;
     }).join('');
 
     root.innerHTML = `
