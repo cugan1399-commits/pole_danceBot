@@ -418,6 +418,40 @@ function copyTrainerNick(username) {
   }
 }
 
+function normalizeTime(time) {
+  if (time == null || time === '') return '';
+  const parts = String(time).trim().split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1] || '0', 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return String(time).trim();
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function appIdString(app) {
+  if (!app || !app._id) return '';
+  if (typeof app._id === 'object' && app._id.$oid) return app._id.$oid;
+  return String(app._id);
+}
+
+function assignCreateErrorMessage(data) {
+  if (data.error === 'slot_taken') {
+    const ex = data.existing;
+    if (ex) {
+      return `Это время уже занято: ${appDayLabel(ex.day)} ${normalizeTime(ex.time)}, зал ${ex.room}, ${ex.direction || 'запись'}.`;
+    }
+    return 'Это время уже занято другой записью.';
+  }
+  if (data.error === 'invalid_input') return 'Не хватает данных (день, зал, группа, направление или тренер). Выберите зал заново.';
+  if (data.error === 'invalid_application_id' || data.error === 'application_not_found') {
+    return 'Ошибка заявки. Закройте и откройте заявку снова.';
+  }
+  if (data.error === 'forbidden') return 'Нет прав для создания занятия.';
+  if (data.error === 'bind_failed') {
+    return 'Занятие создано, но участника записать не удалось. Обновите экран и добавьте участника вручную.';
+  }
+  return 'Не получилось создать занятие.';
+}
+
 let applyState = { step: 'loading', direction: null, trainerId: null, trainerName: null, group: null, availability: [] };
 let directionsCache = [];
 let trainersCache = [];
@@ -1094,16 +1128,27 @@ async function assignGoToAgenda(room) {
 }
 
 async function loadAgenda() {
+  if (!assignState.day || assignState.room == null) {
+    tg.showAlert('Сначала выберите день и зал.');
+    assignState.phase = 'day';
+    renderAssignPanel();
+    return;
+  }
   if (!trainersCache.length) trainersCache = await fetch('/api/trainers').then(r => r.json());
-  assignState.agenda = await fetch(
+  const res = await fetch(
     `/api/admin/agenda?initData=${encodeURIComponent(initData)}&day=${assignState.day}&room=${assignState.room}`
-  ).then(r => r.json());
+  );
+  const data = await res.json();
+  assignState.agenda = Array.isArray(data) ? data : [];
+  if (!res.ok) {
+    tg.showAlert('Не удалось загрузить расписание зала.');
+  }
   renderAssignPanel();
 }
 
 function renderAgendaRows() {
   return APP_HOURS.map(h => {
-    const cls = assignState.agenda.find(c => c.time === h);
+    const cls = assignState.agenda.find(c => normalizeTime(c.time) === h);
     if (!cls) {
       return assignState.newSlotTime === h
         ? renderNewSlotRow(h)
@@ -1208,7 +1253,7 @@ async function assignAddApplicant(classId) {
   await fetch(`/api/admin/classes/${classId}/participants`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, applicationId: assignState.application._id }),
+    body: JSON.stringify({ initData, applicationId: appIdString(assignState.application) }),
   });
   tg.HapticFeedback.notificationOccurred('success');
   assignState.phase = savedPhase;
@@ -1271,19 +1316,35 @@ async function assignCreateNewSlot(time) {
   const draft = assignState.newSlotDraft;
   const savedDay = assignState.day;
   const savedRoom = assignState.room;
+
+  if (!savedDay || savedRoom == null) {
+    tg.showAlert('Сначала выберите день и зал.');
+    assignGoToDay();
+    return;
+  }
+  if (!draft.group || !draft.direction || draft.trainerId == null || draft.trainerId === '') {
+    tg.showAlert('Выберите группу, направление и тренера.');
+    return;
+  }
+
   const res = await fetch('/api/admin/classes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      initData, day: savedDay, time, room: savedRoom,
-      direction: draft.direction, trainerId: draft.trainerId, group: draft.group,
-      applicationId: assignState.application._id,
+      initData,
+      day: savedDay,
+      time: normalizeTime(time),
+      room: Number(savedRoom),
+      direction: draft.direction,
+      trainerId: Number(draft.trainerId),
+      group: draft.group,
+      applicationId: appIdString(assignState.application),
     }),
   });
-  const data = await res.json();
-  if (data.ok) {
-    tg.HapticFeedback.notificationOccurred('success');
-    tg.showAlert('Занятие создано, участник записан.');
+  let data = {};
+  try { data = await res.json(); } catch (e) { data = {}; }
+
+  if (res.ok && data.ok) {
     assignState.phase = 'agenda';
     assignState.day = savedDay;
     assignState.room = savedRoom;
@@ -1300,7 +1361,7 @@ async function assignCreateNewSlot(time) {
     assignState.newSlotTime = null;
     assignState.newSlotDraft = {};
     await loadAgenda();
-    tg.showAlert('Не получилось создать занятие.');
+    tg.showAlert(assignCreateErrorMessage(data));
   }
 }
 

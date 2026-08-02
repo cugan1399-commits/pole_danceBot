@@ -40,6 +40,32 @@ function formatTrainerName(name, username) {
   return cleanUsername ? `${name} (@${cleanUsername})` : name;
 }
 
+function normalizeTime(time) {
+  if (time == null || time === '') return null;
+  const parts = String(time).trim().split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1] || '0', 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return String(time).trim();
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function normalizeRoom(room) {
+  const n = Number(room);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isSameSlot(cls, day, time, room) {
+  return cls.day === day
+    && normalizeTime(cls.time) === normalizeTime(time)
+    && normalizeRoom(cls.room) === normalizeRoom(room);
+}
+
+function parseObjectId(value) {
+  if (!value) return null;
+  if (typeof value === 'object' && value.$oid) return new ObjectId(value.$oid);
+  return new ObjectId(String(value));
+}
+
 function trainerLinkHtml(name, username) {
   const cleanUsername = username ? username.replace(/^@/, '') : null;
   if (!name) return 'Неизвестно';
@@ -293,9 +319,32 @@ app.post('/api/admin/classes', async (req, res) => {
   const auth = await getVerifiedTrainerOrAdmin(req.body.initData);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
 
-  const { day, time, room, direction, trainerId, group, applicationId } = req.body;
-  if (!day || !time || !room || !direction || !trainerId) {
-    return res.status(400).json({ error: 'invalid_input' });
+  const { day, direction, trainerId, group, applicationId } = req.body;
+  const time = normalizeTime(req.body.time);
+  const room = normalizeRoom(req.body.room);
+
+  if (!day || !time || room == null || !direction || trainerId == null || trainerId === '') {
+    return res.status(400).json({
+      error: 'invalid_input',
+      details: { day: !!day, time: !!time, room: room != null, direction: !!direction, trainerId: trainerId != null && trainerId !== '' },
+    });
+  }
+
+  let application = null;
+  if (applicationId) {
+    try {
+      application = await db.collection('applications').findOne({ _id: parseObjectId(applicationId) });
+      if (!application) return res.status(404).json({ error: 'application_not_found' });
+    } catch (err) {
+      console.error('Invalid applicationId:', applicationId, err.message);
+      return res.status(400).json({ error: 'invalid_application_id' });
+    }
+  }
+
+  const dayClasses = await db.collection('classes').find({ day }).toArray();
+  const conflict = dayClasses.find(c => isSameSlot(c, day, time, room));
+  if (conflict) {
+    return res.status(409).json({ error: 'slot_taken', existing: conflict });
   }
 
   const trainer = await db.collection('trainers').findOne({ telegramId: Number(trainerId) });
@@ -303,7 +352,7 @@ app.post('/api/admin/classes', async (req, res) => {
 
   try {
     const result = await db.collection('classes').insertOne({
-      day, time, room: Number(room),
+      day, time, room,
       direction,
       trainerId: Number(trainerId),
       trainerName,
@@ -313,15 +362,25 @@ app.post('/api/admin/classes', async (req, res) => {
       createdAt: new Date(),
     });
 
-    if (applicationId) {
-      const application = await db.collection('applications').findOne({ _id: new ObjectId(applicationId) });
-      if (application) await bindApplicationToClass(application, result.insertedId);
+    if (application) {
+      try {
+        await bindApplicationToClass(application, result.insertedId);
+      } catch (bindErr) {
+        console.error('Class created but participant bind failed:', bindErr);
+        return res.status(500).json({
+          error: 'bind_failed',
+          classId: result.insertedId,
+          message: bindErr.message,
+        });
+      }
     }
 
     res.json({ ok: true, id: result.insertedId, classId: result.insertedId });
   } catch (err) {
+    console.error('POST /api/admin/classes failed:', err);
     if (err.code === 11000) {
-      const existing = await db.collection('classes').findOne({ day, time, room: Number(room) });
+      const existing = dayClasses.find(c => isSameSlot(c, day, time, room))
+        || await db.collection('classes').findOne({ day, time, room });
       return res.status(409).json({ error: 'slot_taken', existing });
     }
     res.status(500).json({ error: 'server_error' });
@@ -378,8 +437,9 @@ app.get('/api/admin/calendar', async (req, res) => {
   const dayKey = CALENDAR_WEEKDAY_MAP[jsDate.getDay()];
 
   const classes = await db.collection('classes').find({ day: dayKey }).sort({ time: 1 }).toArray();
+  const normalizedClasses = classes.map(c => ({ ...c, time: normalizeTime(c.time), room: normalizeRoom(c.room) ?? c.room }));
 
-  const withParticipants = await Promise.all(classes.map(async (c) => {
+  const withParticipants = await Promise.all(normalizedClasses.map(async (c) => {
     const canView = auth.isOwner || c.trainerId === auth.user.id;
     const participants = canView
       ? await db.collection('classBookings').find({ classId: String(c._id) }).toArray()
@@ -553,13 +613,14 @@ app.get('/api/admin/applications', async (req, res) => {
 async function bindApplicationToClass(application, classId) {
   const cls = await db.collection('classes').findOne({ _id: new ObjectId(classId) });
   if (!cls) return null;
+  if (!application.chatId) throw new Error('application_missing_chat_id');
 
   try {
     await db.collection('classBookings').insertOne({
       classId: String(cls._id),
       chatId: application.chatId,
       username: application.username,
-      firstName: application.firstName,
+      firstName: application.firstName || application.name || '',
       group: application.group,
       applicationId: application._id,
       bookedAt: new Date(),
@@ -676,9 +737,15 @@ app.get('/api/admin/agenda', async (req, res) => {
   if (!auth) return res.status(403).json({ error: 'forbidden' });
 
   const { day, room } = req.query;
-  if (!day || !room) return res.status(400).json({ error: 'invalid_input' });
+  if (!day || room == null || room === '') return res.status(400).json({ error: 'invalid_input' });
 
-  const classes = await db.collection('classes').find({ day, room: Number(room) }).toArray();
+  const normRoom = normalizeRoom(room);
+  if (normRoom == null) return res.status(400).json({ error: 'invalid_input' });
+
+  const dayClasses = await db.collection('classes').find({ day }).toArray();
+  const classes = dayClasses
+    .filter(c => normalizeRoom(c.room) === normRoom)
+    .sort((a, b) => normalizeTime(a.time).localeCompare(normalizeTime(b.time)));
   const classIds = classes.map(c => String(c._id));
   const bookings = classIds.length
     ? await db.collection('classBookings').find({ classId: { $in: classIds } }).toArray()
@@ -720,7 +787,12 @@ app.post('/api/admin/classes/:id/participants', async (req, res) => {
   const auth = await getVerifiedTrainerOrAdmin(req.body.initData);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
 
-  const application = await db.collection('applications').findOne({ _id: new ObjectId(req.body.applicationId) });
+  let application;
+  try {
+    application = await db.collection('applications').findOne({ _id: parseObjectId(req.body.applicationId) });
+  } catch (err) {
+    return res.status(400).json({ error: 'invalid_application_id' });
+  }
   if (!application) return res.status(404).json({ error: 'not_found' });
 
   await bindApplicationToClass(application, req.params.id);
