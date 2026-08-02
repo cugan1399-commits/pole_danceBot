@@ -872,6 +872,21 @@ const WEEKDAYS = [
   { key: 'sun', label: 'Воскресенье' },
 ];
 
+// ---------- Тренер сам привязывает себе ник в Telegram (нужен для кликабельной ссылки участникам) ----------
+async function handleSetUsernameCommand(chatId) {
+  const trainer = await db.collection('trainers').findOne({ telegramId: chatId });
+  if (!trainer) return await sendMessage(chatId, 'Эта команда доступна только тренерам/админам.');
+  adminSessions.set(chatId, { flow: 'set_username', data: {} });
+  await sendMessage(chatId, 'Пришли свой ник в Telegram (без @) — он будет кликабельной ссылкой в сообщениях участникам о записи.');
+}
+
+async function handleSetUsernameText(chatId, text) {
+  const raw = text.trim().replace(/^@/, '');
+  await db.collection('trainers').updateOne({ telegramId: chatId }, { $set: { username: raw } });
+  adminSessions.delete(chatId);
+  await sendMessage(chatId, `✅ Готово! Твой ник сохранён: @${raw}`);
+}
+
 // ---------- Добавить тренера ----------
 async function startAddTrainer(chatId) {
   adminSessions.set(chatId, { flow: 'add_trainer', step: 'telegramId', data: {} });
@@ -1273,11 +1288,14 @@ app.post(WEBHOOK_PATH, async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // Если у админа открыт пошаговый диалог (добавление тренера/направления) — ведём его дальше
-      if (chatId === ADMIN_ID && adminSessions.has(chatId) && !msg.text.startsWith('/')) {
+      // Если у тренера/админа открыт пошаговый диалог — ведём его дальше
+      // (раньше это работало только для ADMIN_ID, из-за чего обычные тренеры
+      // не могли завершить, например, привязку своего ника)
+      if (adminSessions.has(chatId) && !msg.text.startsWith('/')) {
         const session = adminSessions.get(chatId);
         if (session.flow === 'add_trainer') await handleAddTrainerText(chatId, msg.text);
         else if (session.flow === 'add_direction') await handleAddDirectionText(chatId, msg.text);
+        else if (session.flow === 'set_username') await handleSetUsernameText(chatId, msg.text);
         return res.sendStatus(200);
       }
 
@@ -1287,6 +1305,7 @@ app.post(WEBHOOK_PATH, async (req, res) => {
       else if (msg.text === '/mybooking') await handleMyBooking(chatId);
       else if (msg.text === '/cancel') await handleCancel(chatId);
       else if (msg.text === '/admin') await handleAdmin(chatId);
+      else if (msg.text === '/username') await handleSetUsernameCommand(chatId);
     }
     if (cb) {
         const chatId = cb.message.chat.id;
