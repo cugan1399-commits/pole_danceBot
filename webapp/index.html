@@ -256,6 +256,17 @@
   .app-summary-line { font-size: 13px; color: var(--text-secondary); margin: 2px 0; }
   .agenda-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
   .agenda-time { font-size: 13px; color: var(--text-secondary); min-width: 42px; }
+  .trainer-nick {
+    color: var(--accent-pink);
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .trainer-nick:active { opacity: 0.7; }
+  .cal-agenda-item.expandable { cursor: pointer; }
+  .cal-participants { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-soft); }
+  .cal-participants-locked { color: var(--text-secondary); font-size: 12px; font-style: italic; }
+  .owner-badge { font-size: 11px; color: var(--accent-pink); margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -301,6 +312,9 @@
         <input id="trainerIdInput" placeholder="Telegram ID тренера">
         <input id="trainerNameInput" placeholder="Имя тренера">
         <input id="trainerUsernameInput" placeholder="Никнейм тренера (без @)">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary)">
+          <input type="checkbox" id="trainerOwnerInput"> Сделать владельцем
+        </label>
         <button class="primary-btn" onclick="addTrainer()">Добавить тренера</button>
       </div>
     </div>
@@ -364,8 +378,19 @@ for (let h = 9; h <= 20; h++) APP_HOURS.push(String(h).padStart(2, '0') + ':00')
 const APP_GROUPS = ['Новичок', 'Standard', 'Pro'];
 
 let currentUserId = null;
+let isOwner = false;
 let isAdmin = false;
 let isTrainer = false;
+
+const WEEKDAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+function sortByWeekdayThenTime(list) {
+  return [...list].sort((a, b) => {
+    const dayDiff = WEEKDAY_ORDER.indexOf(a.day) - WEEKDAY_ORDER.indexOf(b.day);
+    if (dayDiff !== 0) return dayDiff;
+    return (a.time || '').localeCompare(b.time || '');
+  });
+}
 
 function appDayLabel(key) {
   const found = APP_WEEKDAYS.find(([k]) => k === key);
@@ -376,6 +401,21 @@ function formatTrainerName(name, username) {
   if (!name) return 'Неизвестно';
   const cleanUsername = username ? username.replace(/^@/, '') : null;
   return cleanUsername ? `${name} (@${cleanUsername})` : name;
+}
+
+function formatTrainerNameHtml(name, username) {
+  if (!name) return 'Неизвестно';
+  const cleanUsername = username ? username.replace(/^@/, '') : null;
+  if (!cleanUsername) return name;
+  const safeNick = cleanUsername.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return `${name} <a class="trainer-nick" href="https://t.me/${cleanUsername}" target="_blank" onclick="event.stopPropagation(); copyTrainerNick('${safeNick}')">@${cleanUsername}</a>`;
+}
+
+function copyTrainerNick(username) {
+  const text = '@' + username.replace(/^@/, '');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => tg.showAlert('Ник скопирован: ' + text)).catch(() => {});
+  }
 }
 
 let applyState = { step: 'loading', direction: null, trainerId: null, trainerName: null, group: null, availability: [] };
@@ -428,7 +468,7 @@ function renderApplyWizard() {
       const displayName = formatTrainerName(t.name || t.rawName, t.username);
       const safeName = displayName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
-      const deleteBtnHtml = isAdmin ? `
+      const deleteBtnHtml = isOwner ? `
         <button class="wizard-opt-delete" 
                 onclick="event.stopPropagation(); deleteTrainer(${t.telegramId})"
                 title="Удалить тренера">
@@ -595,7 +635,7 @@ async function submitApplication() {
 
 async function loadMySchedule() {
   loadActiveEventsBanner();
-  const list = await fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json());
+  const list = sortByWeekdayThenTime(await fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json()));
   const el = document.getElementById('myScheduleList');
 
   if (!list.length) {
@@ -603,7 +643,7 @@ async function loadMySchedule() {
     return;
   }
 
-  if (isTrainer || isAdmin) {
+  if (isTrainer) {
     el.innerHTML = list.map(c => {
       const participants = (c.participants || []).length
         ? c.participants.map(p => `<div class="app-summary-line">• ${p.name}${p.group ? ' — ' + p.group : ''}</div>`).join('')
@@ -612,7 +652,7 @@ async function loadMySchedule() {
         <div class="class-item" style="flex-direction:column;align-items:stretch">
           <div class="info">
             <div class="day-time">${c.dayLabel} ${c.time}</div>
-            <div class="type">${c.direction}${c.group ? ' — ' + c.group : ''}</div>
+            <div class="type">${c.direction}${c.group ? ' — ' + c.group : ''}${isOwner && c.trainerId !== currentUserId ? ' — ' + formatTrainerNameHtml(c.trainerName, c.trainerUsername) : ''}</div>
           </div>
           <div style="margin-top:6px">${participants}</div>
         </div>
@@ -625,7 +665,7 @@ async function loadMySchedule() {
     <div class="class-item">
       <div class="info">
         <div class="day-time">${c.dayLabel} ${c.time}</div>
-        <div class="type">${c.direction} — тренер ${formatTrainerName(c.trainerName, c.trainerUsername)}</div>
+        <div class="type">${c.direction} — тренер ${formatTrainerNameHtml(c.trainerName, c.trainerUsername)}</div>
       </div>
     </div>
   `).join('');
@@ -637,7 +677,8 @@ async function initApp() {
   try {
     const me = await fetch('/api/me?initData=' + encodeURIComponent(initData)).then(r => r.json());
     currentUserId = me.id;
-    isAdmin = !!me.isAdmin;
+    isOwner = !!me.isOwner;
+    isAdmin = !!me.isAdmin || isOwner;
     isTrainer = !!me.isTrainer;
   } catch (e) {
     isAdmin = false;
@@ -672,15 +713,15 @@ function buildAdminTabs() {
 }
 
 const ADMIN_SUBTABS_ALL = [
-  { id: 'trainers', label: 'Тренеры', adminOnly: true },
-  { id: 'directions', label: 'Направления', adminOnly: false },
-  { id: 'calendar', label: 'Календарь', adminOnly: false },
-  { id: 'participants', label: 'Участники', adminOnly: false },
-  { id: 'events', label: 'Мероприятия', adminOnly: true },
+  { id: 'trainers', label: 'Тренеры', ownerOnly: true },
+  { id: 'directions', label: 'Направления', ownerOnly: false },
+  { id: 'calendar', label: 'Календарь', ownerOnly: false },
+  { id: 'participants', label: 'Участники', ownerOnly: false },
+  { id: 'events', label: 'Мероприятия', ownerOnly: true },
 ];
 
 function currentAdminSubtabs() {
-  return ADMIN_SUBTABS_ALL.filter(t => !t.adminOnly || isAdmin);
+  return ADMIN_SUBTABS_ALL.filter(t => !t.ownerOnly || isOwner);
 }
 
 function buildAdminSubtabs() {
@@ -711,11 +752,11 @@ function switchAdminSubtab(subId) {
   document.querySelectorAll('.subtab-panel').forEach(p => p.style.display = 'none');
   document.querySelectorAll('.subtab-btn').forEach(b => b.classList.toggle('active', b.dataset.subtab === subId));
   document.getElementById('subtab-' + subId).style.display = 'block';
-  if (subId === 'trainers' && isAdmin) loadTrainers();
+  if (subId === 'trainers' && isOwner) loadTrainers();
   else if (subId === 'directions') loadDirections();
   else if (subId === 'calendar') initCalendar();
   else if (subId === 'participants') loadParticipants();
-  else if (subId === 'events' && isAdmin) loadEventsAdmin();
+  else if (subId === 'events' && isOwner) loadEventsAdmin();
 }
 
 async function loadTrainers() {
@@ -724,10 +765,11 @@ async function loadTrainers() {
   el.innerHTML = list.length
     ? list.map(t => {
         const displayName = formatTrainerName(t.name, t.username);
+        const ownerMark = t.isOwner ? '<span class="owner-badge">владелец</span>' : '';
         return `
           <div class="class-item">
             <div class="info">
-              <div class="day-time">${displayName}</div>
+              <div class="day-time">${displayName}${ownerMark}</div>
               <div class="type">ID: ${t.telegramId}</div>
             </div>
             <button class="wizard-opt-delete" onclick="deleteTrainer(${t.telegramId})">🗑️</button>
@@ -741,18 +783,20 @@ async function addTrainer() {
   const telegramId = document.getElementById('trainerIdInput').value.trim();
   const name = document.getElementById('trainerNameInput').value.trim();
   const username = document.getElementById('trainerUsernameInput').value.trim();
+  const isOwnerFlag = document.getElementById('trainerOwnerInput').checked;
   if (!telegramId || !name) return tg.showAlert('Заполни поля ID и Имя.');
 
   const res = await fetch('/api/admin/trainers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, telegramId, name, username })
+    body: JSON.stringify({ initData, telegramId, name, username, isOwner: isOwnerFlag })
   });
   const data = await res.json();
   if (data.ok) {
     document.getElementById('trainerIdInput').value = '';
     document.getElementById('trainerNameInput').value = '';
     document.getElementById('trainerUsernameInput').value = '';
+    document.getElementById('trainerOwnerInput').checked = false;
     tg.HapticFeedback.notificationOccurred('success');
     loadTrainers();
   } else {
@@ -781,7 +825,7 @@ async function loadDirections() {
   const el = document.getElementById('directionsList');
   el.innerHTML = list.length
     ? list.map(d => {
-        const canDelete = isAdmin || (d.addedBy && d.addedBy === currentUserId);
+        const canDelete = isOwner || (d.addedBy && d.addedBy === currentUserId);
         const deleteBtn = canDelete ? `<button class="wizard-opt-delete" onclick="deleteDirection('${d.name}')">🗑️</button>` : '';
         return `
           <div class="class-item">
@@ -852,7 +896,7 @@ function appInfoCard(a) {
   let comparisonBlock = '';
   if (assignedIds.length) {
     const rows = knownClasses.map(cls => `
-      <p class="app-summary-line">${appDayLabel(cls.day)} ${cls.time} — ${cls.direction} (${cls.group || 'без группы'}), тренер: ${formatTrainerName(cls.trainerName, cls.trainerUsername)}</p>
+      <p class="app-summary-line">${appDayLabel(cls.day)} ${cls.time} — ${cls.direction} (${cls.group || 'без группы'}), тренер: ${formatTrainerNameHtml(cls.trainerName, cls.trainerUsername)}</p>
     `).join('');
     comparisonBlock = `
       <hr style="border:none;border-top:1px solid var(--border-soft);margin:10px 0">
@@ -864,7 +908,10 @@ function appInfoCard(a) {
   let actions = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">`;
   actions += `<button class="wizard-opt" onclick="assignGoToDay()">📅 Создать запись</button>`;
   if (assignedIds.length) {
-    actions += `<button class="wizard-opt" onclick="assignGoToDay()">➕ Добавить занятие</button>`;
+    if (assignState && assignState.day && assignState.room) {
+      actions += `<button class="wizard-opt" onclick="assignContinueSameDay()">➕ Добавить на этот день</button>`;
+    }
+    actions += `<button class="wizard-opt" onclick="assignGoToDay()">📅 Другой день</button>`;
   }
   if (a.status !== 'confirmed' && a.status !== 'no_slots') {
     actions += `<button class="wizard-opt" onclick="sendNoSlotsFeedback()">🚫 Нет свободных часов</button>`;
@@ -1023,6 +1070,18 @@ function renderAssignPanel() {
 }
 
 function assignGoToDay() { assignState.phase = 'day'; renderAssignPanel(); }
+function assignContinueSameDay() {
+  if (assignState.day && assignState.room) {
+    assignState.phase = 'agenda';
+    assignState.newSlotTime = null;
+    assignState.newSlotDraft = {};
+    assignState.editingClassId = null;
+    assignState.editingField = null;
+    loadAgenda();
+  } else {
+    assignGoToDay();
+  }
+}
 function assignBackToInfo() { assignState.phase = 'info'; renderAssignPanel(); }
 function assignGoToRoom(day) { assignState.day = day; assignState.phase = 'room'; renderAssignPanel(); }
 
@@ -1055,7 +1114,7 @@ function renderAgendaRows() {
 }
 
 function renderClassRow(cls, h) {
-  const canDelete = isAdmin || (cls.createdBy && cls.createdBy === currentUserId);
+  const canDelete = isOwner || (cls.createdBy && cls.createdBy === currentUserId);
   let row = `<div class="agenda-row"><span class="agenda-time">${h}</span>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','group')">${cls.group || 'Группа?'}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','direction')">${cls.direction}</button>`;
@@ -1143,13 +1202,18 @@ async function assignPatchClass(classId, field, value) {
 }
 
 async function assignAddApplicant(classId) {
+  const savedPhase = assignState.phase;
+  const savedDay = assignState.day;
+  const savedRoom = assignState.room;
   await fetch(`/api/admin/classes/${classId}/participants`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ initData, applicationId: assignState.application._id }),
   });
   tg.HapticFeedback.notificationOccurred('success');
-  loadApplications();
+  assignState.phase = savedPhase;
+  assignState.day = savedDay;
+  assignState.room = savedRoom;
   await refreshCurrentApplication();
   await loadAgenda();
 }
@@ -1160,12 +1224,21 @@ async function assignRemoveParticipant(classId, chatId) {
 }
 
 function assignStartNewSlot(h) {
+  assignState.phase = 'agenda';
   assignState.newSlotTime = h;
   assignState.newSlotDraft = {};
   renderAssignPanel();
 }
-function assignCancelNewSlot() { assignState.newSlotTime = null; renderAssignPanel(); }
-function assignNewSlotPick(field, value) { assignState.newSlotDraft[field] = value; renderAssignPanel(); }
+function assignCancelNewSlot() {
+  assignState.phase = 'agenda';
+  assignState.newSlotTime = null;
+  renderAssignPanel();
+}
+function assignNewSlotPick(field, value) {
+  assignState.newSlotDraft[field] = value;
+  assignState.phase = 'agenda';
+  renderAssignPanel();
+}
 
 function renderNewSlotRow(h) {
   const draft = assignState.newSlotDraft;
@@ -1196,11 +1269,13 @@ function renderNewSlotRow(h) {
 
 async function assignCreateNewSlot(time) {
   const draft = assignState.newSlotDraft;
+  const savedDay = assignState.day;
+  const savedRoom = assignState.room;
   const res = await fetch('/api/admin/classes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      initData, day: assignState.day, time, room: assignState.room,
+      initData, day: savedDay, time, room: savedRoom,
       direction: draft.direction, trainerId: draft.trainerId, group: draft.group,
       applicationId: assignState.application._id,
     }),
@@ -1209,12 +1284,21 @@ async function assignCreateNewSlot(time) {
   if (data.ok) {
     tg.HapticFeedback.notificationOccurred('success');
     tg.showAlert('Занятие создано, участник записан.');
+    assignState.phase = 'agenda';
+    assignState.day = savedDay;
+    assignState.room = savedRoom;
     assignState.newSlotTime = null;
-    loadApplications();
+    assignState.newSlotDraft = {};
+    assignState.editingClassId = null;
+    assignState.editingField = null;
     await refreshCurrentApplication();
     await loadAgenda();
   } else {
+    assignState.phase = 'agenda';
+    assignState.day = savedDay;
+    assignState.room = savedRoom;
     assignState.newSlotTime = null;
+    assignState.newSlotDraft = {};
     await loadAgenda();
     tg.showAlert('Не получилось создать занятие.');
   }
@@ -1237,7 +1321,7 @@ let wizardState = {};
 function renderClearAllBox() {
   const box = document.getElementById('classClearAllBox');
   if (!box) return;
-  if (!isAdmin) { box.innerHTML = ''; return; }
+  if (!isOwner) { box.innerHTML = ''; return; }
   box.innerHTML = `
     <button class="wizard-opt" style="border-color:var(--accent-danger);color:var(--accent-danger);margin-bottom:12px" onclick="clearAllClasses()">
       🧹 (временно) Очистить ВСЕ занятия и записи
@@ -1376,7 +1460,7 @@ async function loadParticipants() {
     <div class="class-item">
       <div class="info">
         <div class="day-time">${p.username ? '@' + p.username : (p.name || 'Без ника')}</div>
-        <div class="type">${p.directions}${isAdmin ? ' — ' + p.trainers : ''}</div>
+        <div class="type">${p.directions}${isOwner ? ' — ' + p.trainers : ''}</div>
       </div>
     </div>
   `).join('');
@@ -1492,10 +1576,12 @@ async function loadActiveEventsBanner() {
 const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 let calDate = new Date();
 let calSelectedDate = null;
+let calExpandedClassId = null;
 
 function initCalendar() {
   calDate = new Date();
   calSelectedDate = null;
+  calExpandedClassId = null;
   document.getElementById('calAgenda').innerHTML = '';
   renderCalendarMonth();
 }
@@ -1545,12 +1631,24 @@ function calNextMonth() {
 
 async function selectCalendarDate(dateStr, cellEl) {
   calSelectedDate = dateStr;
+  calExpandedClassId = null;
   document.querySelectorAll('.cal-cell').forEach(c => c.classList.remove('selected'));
   if (cellEl) cellEl.classList.add('selected');
 
   const res = await fetch(`/api/admin/calendar?initData=${encodeURIComponent(initData)}&date=${dateStr}`);
   const data = await res.json();
+  renderCalendarAgenda(data);
+}
+
+function toggleCalParticipants(classId) {
+  calExpandedClassId = calExpandedClassId === classId ? null : classId;
+  if (window._calAgendaData) renderCalendarAgenda(window._calAgendaData);
+}
+
+function renderCalendarAgenda(data) {
+  window._calAgendaData = data;
   const agendaEl = document.getElementById('calAgenda');
+  const dateStr = data.date;
 
   const eventsHtml = (data.events || []).map(eventCardHtml).join('');
 
@@ -1559,12 +1657,36 @@ async function selectCalendarDate(dateStr, cellEl) {
     return;
   }
 
-  agendaEl.innerHTML = eventsHtml + data.classes.map(c => `
-    <div class="cal-agenda-item">
-      <div><b>${c.time}</b> — ${c.direction} (${formatTrainerName(c.trainerName, c.trainerUsername)}) — Зал ${c.room}</div>
-      <div style="color:var(--text-secondary);margin-top:4px">Участников: ${c.participants.length}</div>
-    </div>
-  `).join('');
+  agendaEl.innerHTML = eventsHtml + data.classes.map(c => {
+    const classId = String(c._id);
+    const canExpand = c.canViewParticipants;
+    const isExpanded = calExpandedClassId === classId;
+    const expandClass = canExpand ? ' expandable' : '';
+
+    let participantsBlock = '';
+    if (canExpand && isExpanded) {
+      if (c.participants.length) {
+        participantsBlock = '<div class="cal-participants">' +
+          c.participants.map(p => `<div class="app-summary-line">• ${p.name}${p.group ? ' — ' + p.group : ''}</div>`).join('') +
+          '</div>';
+      } else {
+        participantsBlock = '<div class="cal-participants"><div class="app-summary-line">Пока никто не записан</div></div>';
+      }
+    } else if (!canExpand) {
+      participantsBlock = `<div class="cal-participants-locked">Список участников доступен только тренеру занятия</div>`;
+    }
+
+    const clickAttr = canExpand ? ` onclick="toggleCalParticipants('${classId}')"` : '';
+    const hint = canExpand ? (isExpanded ? ' ▲' : ' ▼') : '';
+
+    return `
+      <div class="cal-agenda-item${expandClass}"${clickAttr}>
+        <div><b>${c.time}</b> — ${c.direction} (${formatTrainerNameHtml(c.trainerName, c.trainerUsername)}) — Зал ${c.room}${hint}</div>
+        <div style="color:var(--text-secondary);margin-top:4px">Участников: ${c.participants.length}</div>
+        ${participantsBlock}
+      </div>
+    `;
+  }).join('');
 }
 
 window.addEventListener('DOMContentLoaded', initApp);

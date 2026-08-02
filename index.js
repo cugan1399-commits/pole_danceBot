@@ -67,7 +67,8 @@ async function connectDB() {
     await db.collection('trainers').updateOne(
       { telegramId: ADMIN_ID },
       { 
-        $setOnInsert: { telegramId: ADMIN_ID, name: 'Владелец', username: null, addedAt: new Date() }
+        $setOnInsert: { telegramId: ADMIN_ID, name: 'Владелец', username: null, isOwner: true, addedAt: new Date() },
+        $set: { isOwner: true },
       },
       { upsert: true }
     );
@@ -153,17 +154,18 @@ function verifyInitData(initData) {
 async function getVerifiedTrainerOrAdmin(initData) {
   const user = verifyInitData(initData || '');
   if (!user) return null;
-  if (user.id === ADMIN_ID) return { user, isAdmin: true, isTrainer: true };
 
   const trainer = await db.collection('trainers').findOne({ telegramId: user.id });
-  if (trainer) return { user, isAdmin: false, isTrainer: true };
+  const isOwner = user.id === ADMIN_ID || !!(trainer && trainer.isOwner);
+  if (isOwner) return { user, isOwner: true, isTrainer: true, isAdmin: true };
+  if (trainer) return { user, isOwner: false, isTrainer: true, isAdmin: false };
   return null;
 }
 
-function getVerifiedAdmin(initData) {
-  const user = verifyInitData(initData || '');
-  if (!user || user.id !== ADMIN_ID) return null;
-  return user;
+async function getVerifiedOwner(initData) {
+  const auth = await getVerifiedTrainerOrAdmin(initData || '');
+  if (!auth || !auth.isOwner) return null;
+  return auth;
 }
 
 // ===================== API ДЛЯ MINI APP =====================
@@ -181,7 +183,8 @@ app.get('/api/me', async (req, res) => {
   }
 
   const trainer = await db.collection('trainers').findOne({ telegramId: user.id });
-  res.json({ id: user.id, username: user.username || null, isAdmin: user.id === ADMIN_ID, isTrainer: !!trainer });
+  const isOwner = user.id === ADMIN_ID || !!(trainer && trainer.isOwner);
+  res.json({ id: user.id, username: user.username || null, isOwner, isTrainer: !!trainer, isAdmin: isOwner });
 });
 
 app.get('/api/directions', async (req, res) => {
@@ -213,8 +216,8 @@ app.delete('/api/admin/directions/:name', async (req, res) => {
   const dir = await db.collection('directions').findOne({ name: dirName });
   if (!dir) return res.status(404).json({ error: 'not_found' });
 
-  // Обычный тренер удаляет только свои направления
-  if (!auth.isAdmin && dir.addedBy !== auth.user.id) {
+  // Обычный тренер удаляет только свои направления; владелец — любые
+  if (!auth.isOwner && dir.addedBy !== auth.user.id) {
     return res.status(403).json({ error: 'forbidden' });
   }
 
@@ -223,24 +226,27 @@ app.delete('/api/admin/directions/:name', async (req, res) => {
 });
 
 app.get('/api/admin/trainers', async (req, res) => {
-  const admin = getVerifiedAdmin(req.query.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
+  const owner = await getVerifiedOwner(req.query.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   const trainers = await db.collection('trainers').find({}).sort({ addedAt: 1 }).toArray();
   res.json(trainers);
 });
 
 app.post('/api/admin/trainers', async (req, res) => {
-  const admin = getVerifiedAdmin(req.body.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
+  const owner = await getVerifiedOwner(req.body.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   const telegramId = parseInt(req.body.telegramId, 10);
   const name = (req.body.name || '').trim();
   const username = (req.body.username || '').trim().replace(/^@/, '') || null;
+  const makeOwner = !!req.body.isOwner;
   if (!telegramId || !name) return res.status(400).json({ error: 'invalid_input' });
 
   try {
-    await db.collection('trainers').insertOne({ telegramId, name, username, addedAt: new Date() });
+    await db.collection('trainers').insertOne({
+      telegramId, name, username, isOwner: makeOwner, addedBy: owner.user.id, addedAt: new Date(),
+    });
     res.json({ ok: true });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ error: 'already_exists' });
@@ -249,8 +255,8 @@ app.post('/api/admin/trainers', async (req, res) => {
 });
 
 app.delete('/api/trainers/:id', async (req, res) => {
-  const admin = getVerifiedAdmin(req.query.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
+  const owner = await getVerifiedOwner(req.query.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   const telegramId = parseInt(req.params.id, 10);
   if (telegramId === ADMIN_ID) return res.status(400).json({ error: 'cannot_delete_owner' });
@@ -260,8 +266,8 @@ app.delete('/api/trainers/:id', async (req, res) => {
 });
 
 app.post('/api/admin/classes/clear-all', async (req, res) => {
-  const user = verifyInitData(req.body.initData || '');
-  if (!user || user.id !== ADMIN_ID) return res.status(403).json({ error: 'forbidden' });
+  const owner = await getVerifiedOwner(req.body.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   const classesCount = await db.collection('classes').countDocuments({});
   await db.collection('classes').deleteMany({});
@@ -341,8 +347,8 @@ app.delete('/api/admin/classes/:id', async (req, res) => {
   const cls = await db.collection('classes').findOne({ _id: new ObjectId(classId) });
   if (!cls) return res.status(404).json({ error: 'not_found' });
 
-  // Обычный тренер удаляет только свои занятия
-  if (!auth.isAdmin && cls.createdBy !== auth.user.id) {
+  // Обычный тренер удаляет только свои занятия; владелец — любые
+  if (!auth.isOwner && cls.createdBy !== auth.user.id) {
     return res.status(403).json({ error: 'forbidden' });
   }
 
@@ -374,8 +380,20 @@ app.get('/api/admin/calendar', async (req, res) => {
   const classes = await db.collection('classes').find({ day: dayKey }).sort({ time: 1 }).toArray();
 
   const withParticipants = await Promise.all(classes.map(async (c) => {
-    const participants = await db.collection('classBookings').find({ classId: String(c._id) }).toArray();
-    return { ...c, participants: participants.map(p => ({ username: p.username, chatId: p.chatId })) };
+    const canView = auth.isOwner || c.trainerId === auth.user.id;
+    const participants = canView
+      ? await db.collection('classBookings').find({ classId: String(c._id) }).toArray()
+      : [];
+    return {
+      ...c,
+      canViewParticipants: canView,
+      participants: participants.map(p => ({
+        name: p.firstName || (p.username ? '@' + p.username : 'Без имени'),
+        username: p.username,
+        chatId: p.chatId,
+        group: p.group || null,
+      })),
+    };
   }));
 
   const events = await db.collection('events').find({ date: dateStr }, { projection: { imageData: 0 } }).toArray();
@@ -469,6 +487,15 @@ app.get('/api/myapplications', async (req, res) => {
   res.json(apps);
 });
 
+const WEEKDAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+function sortByWeekdayThenTime(list) {
+  return list.sort((a, b) => {
+    const dayDiff = WEEKDAY_ORDER.indexOf(a.day) - WEEKDAY_ORDER.indexOf(b.day);
+    if (dayDiff !== 0) return dayDiff;
+    return (a.time || '').localeCompare(b.time || '');
+  });
+}
+
 app.get('/api/myschedule', async (req, res) => {
   const user = verifyInitData(req.query.initData || '');
   if (!user) return res.status(401).json({ error: 'unauthorized' });
@@ -476,7 +503,9 @@ app.get('/api/myschedule', async (req, res) => {
   const trainer = await db.collection('trainers').findOne({ telegramId: user.id });
 
   if (trainer) {
-    const classes = await db.collection('classes').find({ trainerId: user.id }).sort({ day: 1, time: 1 }).toArray();
+    const classes = sortByWeekdayThenTime(
+      await db.collection('classes').find({ trainerId: user.id }).toArray()
+    );
     const classIds = classes.map(c => String(c._id));
     const bookings = classIds.length
       ? await db.collection('classBookings').find({ classId: { $in: classIds } }).toArray()
@@ -498,10 +527,10 @@ app.get('/api/myschedule', async (req, res) => {
     ? await db.collection('classes').find({ _id: { $in: classIds } }).toArray()
     : [];
 
-  const merged = classes.map(c => ({
+  const merged = sortByWeekdayThenTime(classes.map(c => ({
     ...c,
     dayLabel: WEEKDAYS.find(d => d.key === c.day)?.label || c.day,
-  }));
+  })));
   res.json(merged);
 });
 
@@ -511,9 +540,9 @@ app.get('/api/admin/applications', async (req, res) => {
 
   const status = req.query.status || 'pending';
   
-  // Главный админ видит все заявки, тренер — только сославшиеся на него или ни на кого
+  // Владелец видит все заявки, обычный тренер — только на него или без тренера
   let query = { status };
-  if (!auth.isAdmin) {
+  if (!auth.isOwner) {
     query.$or = [{ trainerId: auth.user.id }, { trainerId: null }];
   }
 
@@ -712,7 +741,7 @@ app.get('/api/admin/participants', async (req, res) => {
   const auth = await getVerifiedTrainerOrAdmin(req.query.initData);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
 
-  const classFilter = auth.isAdmin ? {} : { trainerId: auth.user.id };
+  const classFilter = auth.isOwner ? {} : { trainerId: auth.user.id };
   const classes = await db.collection('classes').find(classFilter).toArray();
   if (!classes.length) return res.json([]);
 
@@ -755,7 +784,7 @@ app.post('/api/admin/broadcast', async (req, res) => {
   const imageData = parseDataUrl(req.body.imageBase64);
   if (!text && !imageData) return res.status(400).json({ error: 'empty_message' });
 
-  const classFilter = auth.isAdmin ? {} : { trainerId: auth.user.id };
+  const classFilter = auth.isOwner ? {} : { trainerId: auth.user.id };
   const classes = await db.collection('classes').find(classFilter).toArray();
   const classIds = classes.map(c => String(c._id));
   if (!classIds.length) return res.json({ ok: true, sent: 0, failed: 0, total: 0 });
@@ -782,8 +811,8 @@ app.post('/api/admin/broadcast', async (req, res) => {
 // ===================== МЕРОПРИЯТИЯ (только владелец) =====================
 
 app.post('/api/admin/events', async (req, res) => {
-  const admin = getVerifiedAdmin(req.body.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
+  const owner = await getVerifiedOwner(req.body.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   const text = (req.body.text || '').trim();
   const date = (req.body.date || '').trim();
@@ -796,7 +825,7 @@ app.post('/api/admin/events', async (req, res) => {
     date,
     imageMime: imageData ? imageData.mime : null,
     imageData: imageData ? imageData.buffer : null,
-    createdBy: admin.id,
+    createdBy: owner.user.id,
     createdAt: new Date(),
   });
 
@@ -804,8 +833,8 @@ app.post('/api/admin/events', async (req, res) => {
 });
 
 app.get('/api/admin/events', async (req, res) => {
-  const admin = getVerifiedAdmin(req.query.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
+  const owner = await getVerifiedOwner(req.query.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   const list = await db.collection('events').find({}, { projection: { imageData: 0 } }).sort({ date: -1 }).toArray();
   const { dateStr: today } = nowInStudioTZ();
@@ -813,8 +842,8 @@ app.get('/api/admin/events', async (req, res) => {
 });
 
 app.delete('/api/admin/events/:id', async (req, res) => {
-  const admin = getVerifiedAdmin(req.query.initData);
-  if (!admin) return res.status(403).json({ error: 'forbidden' });
+  const owner = await getVerifiedOwner(req.query.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   await db.collection('events').deleteOne({ _id: new ObjectId(req.params.id) });
   res.json({ ok: true });
