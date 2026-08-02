@@ -41,12 +41,7 @@
     width: 100%;
     margin: 0 0 20px;
   }
-  h1 {
-    font-size: 20px;
-    font-weight: 300;
-    letter-spacing: 0.02em;
-    margin: 0 0 16px;
-  }
+  h1 { font-size: 20px; font-weight: 300; letter-spacing: 0.02em; margin: 0 0 16px; }
   .status-card {
     background: var(--bg-card);
     border: 1px solid var(--border-soft);
@@ -69,7 +64,6 @@
   .class-item .info { display: flex; flex-direction: column; }
   .class-item .day-time { font-weight: 500; }
   .class-item .type { font-size: 14px; color: var(--text-secondary); }
-  .class-item .spots { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
   button.book-btn, button.cancel-btn {
     border: none;
     border-radius: 10px;
@@ -78,24 +72,6 @@
     font-weight: 500;
     cursor: pointer;
     font-family: inherit;
-  }
-  button.book-btn {
-    background: transparent;
-    border: 1px solid var(--text-secondary);
-    color: var(--text-primary);
-    transition: background .15s ease, border-color .15s ease;
-  }
-  button.book-btn:active, button.book-btn:hover {
-    background: var(--accent-pink-active);
-    border-color: var(--accent-pink-active);
-    color: #fff;
-  }
-  button.book-btn:disabled { opacity: 0.4; cursor: default; }
-  button.book-btn.booked {
-    background: var(--accent-pink);
-    border-color: var(--accent-pink);
-    color: #fff;
-    opacity: 1;
   }
   button.cancel-btn { background: var(--accent-danger); color: #fff; }
   .empty { color: var(--text-secondary); text-align: center; margin-top: 40px; }
@@ -135,19 +111,11 @@
     cursor: pointer;
   }
 
-.wizard-step-label { color: var(--text-secondary); font-size: 13px; margin: 0 0 10px; }
+  .wizard-step-label { color: var(--text-secondary); font-size: 13px; margin: 0 0 10px; }
   .wizard-options { display: flex; flex-wrap: wrap; gap: 8px; }
   
-  /* Контейнер для строки "Тренер + Кнопка удаления" */
-  .wizard-opt-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-  }
-  .wizard-opt-row .wizard-opt {
-    flex: 1;
-  }
+  .wizard-opt-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .wizard-opt-row .wizard-opt { flex: 1; }
 
   .wizard-opt {
     background: var(--bg-card);
@@ -161,7 +129,6 @@
   }
   .wizard-opt:disabled { opacity: 0.3; cursor: not-allowed; }
 
-  /* Стили для кнопки удаления */
   .wizard-opt-delete {
     background: rgba(255, 77, 77, 0.12);
     border: 1px solid rgba(255, 77, 77, 0.3);
@@ -173,12 +140,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s ease;
   }
-  .wizard-opt-delete:hover {
-    background: #ff4d4d;
-    color: #ffffff;
-  }
+  .wizard-opt-delete:hover { background: #ff4d4d; color: #ffffff; }
 
   .wizard-back { margin-bottom: 12px; background: transparent; border: none; color: var(--text-secondary); font-size: 13px; font-family: inherit; cursor: pointer; padding: 0; }
 
@@ -218,7 +181,6 @@
     font-size: 13px;
   }
 
-  /* ---- Анкета-заявка ---- */
   .avail-day-block { margin-bottom: 14px; }
   .avail-day-label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
   .avail-hours { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -323,6 +285,10 @@ const APP_HOURS = [];
 for (let h = 9; h <= 20; h++) APP_HOURS.push(String(h).padStart(2, '0') + ':00');
 const APP_GROUPS = ['Новичок', 'Standard', 'Pro'];
 
+let currentUserId = null;
+let isAdmin = false;
+let isTrainer = false;
+
 function appDayLabel(key) {
   const found = APP_WEEKDAYS.find(([k]) => k === key);
   return found ? found[1] : key;
@@ -334,7 +300,6 @@ function formatTrainerName(name, username) {
   return cleanUsername ? `${name} (@${cleanUsername})` : name;
 }
 
-// ---------- "Запись" (анкета-заявка) ----------
 let applyState = { step: 'loading', direction: null, trainerId: null, trainerName: null, group: null, availability: [] };
 let directionsCache = [];
 let trainersCache = [];
@@ -372,23 +337,22 @@ function renderApplyWizard() {
   const root = document.getElementById('applyRoot');
 
   if (applyState.step === 'direction') {
+    const list = directionsCache.map(d => typeof d === 'object' ? d.name : d);
     root.innerHTML = '<div class="wizard-step-label">Выберите направление</div><div class="wizard-options">' +
-      (directionsCache.length ? directionsCache : ['Pole Dance', 'Exotic', 'Stretching'])
+      (list.length ? list : ['Pole Dance', 'Exotic', 'Stretching'])
         .map(d => `<button class="wizard-opt" onclick="applyPickDirection('${d.replace(/'/g, "\\'")}')">${d}</button>`).join('') +
       '</div>';
     return;
   }
 
-if (applyState.step === 'trainer') {
+  if (applyState.step === 'trainer') {
     const options = trainersCache.map(t => {
-      // Использование экранирования кавычек и проверка данных тренера
       const displayName = formatTrainerName(t.name || t.rawName, t.username);
       const safeName = displayName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
-      // Кнопка удаления рендерится только для админа
       const deleteBtnHtml = isAdmin ? `
         <button class="wizard-opt-delete" 
-                onclick="event.stopPropagation(); deleteTrainer(${t.telegramId}, '${safeName}')"
+                onclick="event.stopPropagation(); deleteTrainer(${t.telegramId})"
                 title="Удалить тренера">
           🗑️
         </button>
@@ -551,17 +515,16 @@ async function submitApplication() {
   }
 }
 
-// ---------- "Моё расписание" ----------
 async function loadMySchedule() {
   const list = await fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json());
   const el = document.getElementById('myScheduleList');
 
   if (!list.length) {
-    el.innerHTML = '<div class="empty">Пока нет подтверждённых занятий. Отправьте заявку во вкладке «Запись».</div>';
+    el.innerHTML = '<div class="empty">Пока нет подтверждённых занятий.</div>';
     return;
   }
 
-  if (isTrainer) {
+  if (isTrainer || isAdmin) {
     el.innerHTML = list.map(c => {
       const participants = (c.participants || []).length
         ? c.participants.map(p => `<div class="app-summary-line">• ${p.name}${p.group ? ' — ' + p.group : ''}</div>`).join('')
@@ -589,15 +552,12 @@ async function loadMySchedule() {
   `).join('');
 }
 
-// ===================== Админ-режим =====================
-let isAdmin = false;
-let isTrainer = false;
-
 async function initApp() {
   directionsCache = await fetch('/api/directions').then(r => r.json());
 
   try {
     const me = await fetch('/api/me?initData=' + encodeURIComponent(initData)).then(r => r.json());
+    currentUserId = me.id;
     isAdmin = !!me.isAdmin;
     isTrainer = !!me.isTrainer;
   } catch (e) {
@@ -606,10 +566,10 @@ async function initApp() {
   }
 
   await initApplyTab();
-  if (isAdmin) buildAdminTabs();
+  if (isAdmin || isTrainer) buildAdminTabs();
 
   const wantedAppId = new URLSearchParams(location.search).get('app');
-  if (isAdmin && wantedAppId) {
+  if ((isAdmin || isTrainer) && wantedAppId) {
     switchTab('applications');
   }
 }
@@ -618,11 +578,13 @@ function buildAdminTabs() {
   const bar = document.getElementById('tabbar');
   const tabs = [
     { id: 'applications', label: 'Заявки' },
-    { id: 'trainers', label: 'Тренеры' },
     { id: 'directions', label: 'Направления' },
     { id: 'classes', label: 'Занятия' },
     { id: 'calendar', label: 'Календарь' },
   ];
+  if (isAdmin) {
+    tabs.splice(1, 0, { id: 'trainers', label: 'Тренеры' });
+  }
   tabs.forEach(t => {
     const btn = document.createElement('button');
     btn.className = 'tab-btn';
@@ -640,13 +602,12 @@ function switchTab(tabId) {
   if (tabId === 'schedule') initApplyTab();
   else if (tabId === 'myschedule') loadMySchedule();
   else if (tabId === 'applications') loadApplications();
-  else if (tabId === 'trainers') loadTrainers();
+  else if (tabId === 'trainers' && isAdmin) loadTrainers();
   else if (tabId === 'directions') loadDirections();
   else if (tabId === 'classes') startClassWizard();
   else if (tabId === 'calendar') initCalendar();
 }
 
-// ---------- Тренеры ----------
 async function loadTrainers() {
   const list = await fetch('/api/admin/trainers?initData=' + encodeURIComponent(initData)).then(r => r.json());
   const el = document.getElementById('trainersList');
@@ -659,6 +620,7 @@ async function loadTrainers() {
               <div class="day-time">${displayName}</div>
               <div class="type">ID: ${t.telegramId}</div>
             </div>
+            <button class="wizard-opt-delete" onclick="deleteTrainer(${t.telegramId})">🗑️</button>
           </div>
         `;
       }).join('')
@@ -688,16 +650,36 @@ async function addTrainer() {
   }
 }
 
-// ---------- Направления ----------
+async function deleteTrainer(telegramId) {
+  tg.showConfirm('Удалить этого тренера?', async (ok) => {
+    if (!ok) return;
+    const res = await fetch(`/api/trainers/${telegramId}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success || data.ok) {
+      tg.HapticFeedback.notificationOccurred('success');
+      loadTrainers();
+      trainersCache = await fetch('/api/trainers').then(r => r.json());
+    } else {
+      tg.showAlert('Не удалось удалить тренера.');
+    }
+  });
+}
+
 async function loadDirections() {
   const list = await fetch('/api/directions').then(r => r.json());
+  directionsCache = list;
   const el = document.getElementById('directionsList');
   el.innerHTML = list.length
-    ? list.map(name => `
-        <div class="class-item">
-          <div class="info"><div class="day-time">${name}</div></div>
-        </div>
-      `).join('')
+    ? list.map(d => {
+        const canDelete = isAdmin || (d.addedBy && d.addedBy === currentUserId);
+        const deleteBtn = canDelete ? `<button class="wizard-opt-delete" onclick="deleteDirection('${d.name}')">🗑️</button>` : '';
+        return `
+          <div class="class-item">
+            <div class="info"><div class="day-time">${d.name}</div></div>
+            ${deleteBtn}
+          </div>
+        `;
+      }).join('')
     : '<div class="empty" style="margin-top:0">Пока нет направлений</div>';
 }
 
@@ -720,7 +702,20 @@ async function addDirection() {
   }
 }
 
-// ---------- Заявки (админ) ----------
+async function deleteDirection(name) {
+  tg.showConfirm(`Удалить направление "${name}"?`, async (ok) => {
+    if (!ok) return;
+    const res = await fetch(`/api/admin/directions/${encodeURIComponent(name)}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.ok) {
+      tg.HapticFeedback.notificationOccurred('success');
+      loadDirections();
+    } else {
+      tg.showAlert(data.error === 'forbidden' ? 'Вы можете удалять только свои направления.' : 'Ошибка удаления.');
+    }
+  });
+}
+
 let assignState = null;
 
 function appConfirmedClassIds(a) {
@@ -950,12 +945,15 @@ function renderAgendaRows() {
 }
 
 function renderClassRow(cls, h) {
+  const canDelete = isAdmin || (cls.createdBy && cls.createdBy === currentUserId);
   let row = `<div class="agenda-row"><span class="agenda-time">${h}</span>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','group')">${cls.group || 'Группа?'}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','direction')">${cls.direction}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','trainer')">${formatTrainerName(cls.trainerName, cls.trainerUsername)}</button>`;
   row += `<button class="wizard-opt" onclick="assignEditField('${cls._id}','participants')">Участники (${cls.participants.length})</button>`;
-  row += `<button class="wizard-opt" onclick="assignDeleteClass('${cls._id}')">🗑</button>`;
+  if (canDelete) {
+    row += `<button class="wizard-opt" onclick="assignDeleteClass('${cls._id}')">🗑</button>`;
+  }
   row += '</div>';
   if (assignState.editingClassId === cls._id && assignState.editingField) {
     row += renderInlineEditor(cls);
@@ -966,22 +964,29 @@ function renderClassRow(cls, h) {
 async function assignDeleteClass(classId) {
   tg.showConfirm('Удалить эту запись целиком? Все участники будут откреплены.', async (ok) => {
     if (!ok) return;
-    await fetch(`/api/admin/classes/${classId}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
-    tg.HapticFeedback.notificationOccurred('success');
-    loadApplications();
-    await loadAgenda();
+    const res = await fetch(`/api/admin/classes/${classId}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.ok) {
+      tg.HapticFeedback.notificationOccurred('success');
+      loadApplications();
+      await loadAgenda();
+    } else {
+      tg.showAlert(data.error === 'forbidden' ? 'Вы не можете удалять чужие записи.' : 'Ошибка удаления.');
+    }
   });
 }
 
 function renderInlineEditor(cls) {
   const a = assignState.application;
+  const dirNames = directionsCache.map(d => typeof d === 'object' ? d.name : d);
+
   if (assignState.editingField === 'group') {
     return '<div class="wizard-options" style="margin:6px 0 12px">' +
       APP_GROUPS.map(g => `<button class="wizard-opt" onclick="assignPatchClass('${cls._id}','group','${g}')">${g}</button>`).join('') + '</div>';
   }
   if (assignState.editingField === 'direction') {
     return '<div class="wizard-options" style="margin:6px 0 12px">' +
-      directionsCache.map(d => `<button class="wizard-opt" onclick="assignPatchClass('${cls._id}','direction','${d.replace(/'/g, "\\'")}')">${d}</button>`).join('') + '</div>';
+      dirNames.map(d => `<button class="wizard-opt" onclick="assignPatchClass('${cls._id}','direction','${d.replace(/'/g, "\\'")}')">${d}</button>`).join('') + '</div>';
   }
   if (assignState.editingField === 'trainer') {
     return '<div class="wizard-options" style="margin:6px 0 12px">' +
@@ -1054,6 +1059,8 @@ function assignNewSlotPick(field, value) { assignState.newSlotDraft[field] = val
 
 function renderNewSlotRow(h) {
   const draft = assignState.newSlotDraft;
+  const dirNames = directionsCache.map(d => typeof d === 'object' ? d.name : d);
+
   let row = `<div class="agenda-row"><span class="agenda-time">${h}</span><button class="wizard-opt" onclick="assignCancelNewSlot()">отмена</button></div>`;
   if (!draft.group) {
     row += '<div class="wizard-options" style="margin:6px 0 12px">' +
@@ -1062,7 +1069,7 @@ function renderNewSlotRow(h) {
   }
   if (!draft.direction) {
     row += '<div class="wizard-options" style="margin:6px 0 12px">' +
-      directionsCache.map(d => `<button class="wizard-opt" onclick="assignNewSlotPick('direction','${d.replace(/'/g, "\\'")}')">${d}</button>`).join('') + '</div>';
+      dirNames.map(d => `<button class="wizard-opt" onclick="assignNewSlotPick('direction','${d.replace(/'/g, "\\'")}')">${d}</button>`).join('') + '</div>';
     return row;
   }
   if (!draft.trainerId) {
@@ -1091,7 +1098,7 @@ async function assignCreateNewSlot(time) {
   const data = await res.json();
   if (data.ok) {
     tg.HapticFeedback.notificationOccurred('success');
-    tg.showAlert('Занятие создано, участник записан. Проверьте данные и нажмите «Подтвердить», чтобы уведомить его.');
+    tg.showAlert('Занятие создано, участник записан.');
     assignState.newSlotTime = null;
     loadApplications();
     await refreshCurrentApplication();
@@ -1099,20 +1106,10 @@ async function assignCreateNewSlot(time) {
   } else {
     assignState.newSlotTime = null;
     await loadAgenda();
-    if (data.error === 'slot_taken' && data.existing) {
-      const e = data.existing;
-      tg.showAlert(`Это время уже занято: ${e.direction || '—'}${e.group ? ' / ' + e.group : ''}, тренер ${e.trainerName || '—'} (зал ${e.room}). Обновил список.`);
-    } else {
-      tg.showAlert(
-        data.error === 'slot_taken'
-          ? 'Это время уже заняли (возможно, только что) — обновил список, посмотрите, что там теперь стоит.'
-          : 'Не получилось создать занятие.'
-      );
-    }
+    tg.showAlert('Не получилось создать занятие.');
   }
 }
 
-// ---------- Мастер добавления занятия ----------
 const WEEKDAYS = [
   ['mon', 'Понедельник'], ['tue', 'Вторник'], ['wed', 'Среда'],
   ['thu', 'Четверг'], ['fri', 'Пятница'], ['sat', 'Суббота'], ['sun', 'Воскресенье'],
@@ -1139,7 +1136,7 @@ function renderClearAllBox() {
 }
 
 function clearAllClasses() {
-  tg.showConfirm('Удалить ВСЕ занятия и записи участников во всех залах и днях? Это нельзя отменить.', async (ok) => {
+  tg.showConfirm('Удалить ВСЕ занятия и записи участников? Это нельзя отменить.', async (ok) => {
     if (!ok) return;
     const res = await fetch('/api/admin/classes/clear-all', {
       method: 'POST',
@@ -1208,19 +1205,20 @@ async function renderWizard() {
 
   if (!wizardState.direction) {
     const directions = await fetch('/api/directions').then(r => r.json());
+    const dirNames = directions.map(d => typeof d === 'object' ? d.name : d);
     el.innerHTML = backButtonHtml() +
       `<div class="wizard-step-label">Зал ${wizardState.room} — направление</div><div class="wizard-options">` +
-      directions.map(d => `<button class="wizard-opt" onclick="pickDirection('${d}')">${d}</button>`).join('') +
+      dirNames.map(d => `<button class="wizard-opt" onclick="pickDirection('${d}')">${d}</button>`).join('') +
       '</div>';
     return;
   }
 
   if (!wizardState.trainerId) {
-    const trainers = await fetch('/api/admin/trainers?initData=' + encodeURIComponent(initData)).then(r => r.json());
+    const trainers = await fetch('/api/trainers').then(r => r.json());
     el.innerHTML = backButtonHtml() +
       `<div class="wizard-step-label">${wizardState.direction} — кто ведёт?</div><div class="wizard-options">` +
       trainers.map(t => {
-        const displayName = formatTrainerName(t.name, t.username);
+        const displayName = formatTrainerName(t.name || t.rawName, t.username);
         return `<button class="wizard-opt" onclick="pickTrainer(${t.telegramId})">${displayName}</button>`;
       }).join('') +
       '</div>';
@@ -1252,7 +1250,6 @@ async function pickTrainer(id) {
   }
 }
 
-// ---------- Интерактивный календарь ----------
 const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
 let calDate = new Date();
 let calSelectedDate = null;
