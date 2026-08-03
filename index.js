@@ -95,7 +95,14 @@ async function connectDB() {
     await db.collection('classes').createIndex({ day: 1, time: 1, room: 1 }, { unique: true });
     await db.collection('classBookings').createIndex({ classId: 1, chatId: 1 }, { unique: true });
     await db.collection('applications').createIndex({ chatId: 1, status: 1 });
-    await db.collection('events').createIndex({ date: 1 });
+    await db.collection('journal').createIndex({ createdAt: -1 });
+    await db.collection('events').createIndex({ dateFrom: 1, dateTo: 1 });
+
+    // Миграция старых мероприятий (поле date) на новую схему dateFrom/dateTo
+    await db.collection('events').updateMany(
+      { date: { $exists: true }, dateFrom: { $exists: false } },
+      [{ $set: { dateFrom: '$date', dateTo: '$date' } }]
+    );
 
     // Главный админ
     await db.collection('trainers').updateOne(
@@ -259,6 +266,75 @@ app.delete('/api/admin/directions/:name', async (req, res) => {
 
   await db.collection('directions').deleteOne({ name: dirName });
   res.json({ ok: true });
+});
+
+app.get('/api/my-trainer-info', async (req, res) => {
+  const auth = await getVerifiedTrainerOrAdmin(req.query.initData);
+  if (!auth) return res.status(403).json({ error: 'forbidden' });
+
+  const trainer = await db.collection('trainers').findOne({ telegramId: auth.user.id });
+  if (!trainer) return res.status(404).json({ error: 'not_found' });
+
+  res.json({
+    bio: trainer.bio || '',
+    links: Array.isArray(trainer.links) ? trainer.links : [],
+    hasAvatar: !!trainer.avatarMime,
+  });
+});
+
+app.post('/api/my-trainer-info', async (req, res) => {
+  const auth = await getVerifiedTrainerOrAdmin(req.body.initData);
+  if (!auth) return res.status(403).json({ error: 'forbidden' });
+
+  const bio = (req.body.bio || '').trim();
+  const links = Array.isArray(req.body.links)
+    ? req.body.links
+        .map(l => ({ label: String(l.label || '').trim(), url: String(l.url || '').trim() }))
+        .filter(l => l.label && l.url)
+        .slice(0, 10)
+    : [];
+
+  const update = { $set: { bio, links } };
+  const avatarData = parseDataUrl(req.body.avatarBase64);
+  if (avatarData) {
+    update.$set.avatarMime = avatarData.mime;
+    update.$set.avatarData = avatarData.buffer;
+  }
+
+  await db.collection('trainers').updateOne({ telegramId: auth.user.id }, update);
+  res.json({ ok: true });
+});
+
+app.get('/api/trainer-info/:telegramId/avatar', async (req, res) => {
+  const user = verifyInitData(req.query.initData || '');
+  if (!user) return res.status(401).send('unauthorized');
+
+  const trainer = await db.collection('trainers').findOne({ telegramId: Number(req.params.telegramId) });
+  if (!trainer || !trainer.avatarData) return res.status(404).send('not_found');
+
+  const buf = Buffer.isBuffer(trainer.avatarData) ? trainer.avatarData : Buffer.from(trainer.avatarData.buffer || trainer.avatarData);
+  res.set('Content-Type', trainer.avatarMime || 'image/jpeg');
+  res.send(buf);
+});
+
+app.get('/api/trainers-public', async (req, res) => {
+  const user = verifyInitData(req.query.initData || '');
+  if (!user) return res.status(401).json({ error: 'unauthorized' });
+
+  const trainers = await db.collection('trainers')
+    .find({}, { projection: { avatarData: 0 } })
+    .sort({ addedAt: 1 })
+    .toArray();
+
+  res.json(trainers.map(t => ({
+    telegramId: t.telegramId,
+    name: t.name,
+    username: t.username,
+    isOwner: !!t.isOwner,
+    bio: t.bio || '',
+    links: Array.isArray(t.links) ? t.links : [],
+    hasAvatar: !!t.avatarMime,
+  })));
 });
 
 app.get('/api/admin/trainers', async (req, res) => {
@@ -469,7 +545,7 @@ app.get('/api/admin/calendar', async (req, res) => {
     };
   }));
 
-  const events = await db.collection('events').find({ date: dateStr }, { projection: { imageData: 0 } }).toArray();
+  const events = await db.collection('events').find({ dateFrom: { $lte: dateStr }, dateTo: { $gte: dateStr } }, { projection: { imageData: 0 } }).toArray();
 
   res.json({ date: dateStr, day: dayKey, classes: withParticipants, events: events.map(e => ({ ...e, hasImage: !!e.imageMime })) });
 });
@@ -530,6 +606,18 @@ app.post('/api/apply', async (req, res) => {
   };
 
   const result = await db.collection('applications').insertOne(doc);
+
+  await db.collection('journal').insertOne({
+    applicationId: result.insertedId,
+    name: doc.name,
+    phone: doc.phone,
+    username: doc.username,
+    direction: doc.direction,
+    group: doc.group,
+    trainerName: doc.trainerName,
+    status: 'pending',
+    createdAt: doc.createdAt,
+  });
 
   const target = trainer ? trainer.telegramId : ADMIN_ID;
   try {
@@ -700,6 +788,11 @@ app.post('/api/admin/applications/:id/send-confirmation', async (req, res) => {
     { $set: { status: 'confirmed', confirmedAt: new Date() } }
   );
 
+  await db.collection('journal').updateOne(
+    { applicationId: application._id },
+    { $set: { status: 'confirmed', updatedAt: new Date() } }
+  );
+
   res.json({ ok: true });
 });
 
@@ -725,6 +818,11 @@ app.post('/api/admin/applications/:id/no-slots', async (req, res) => {
     { $set: { status: 'no_slots', noSlotsSentAt: new Date() } }
   );
 
+  await db.collection('journal').updateOne(
+    { applicationId: application._id },
+    { $set: { status: 'no_slots', updatedAt: new Date() } }
+  );
+
   res.json({ ok: true });
 });
 
@@ -741,7 +839,28 @@ app.delete('/api/admin/applications/:id', async (req, res) => {
   const auth = await getVerifiedTrainerOrAdmin(req.query.initData);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
 
+  await db.collection('journal').updateOne(
+    { applicationId: new ObjectId(req.params.id) },
+    { $set: { status: 'deleted', updatedAt: new Date() } }
+  );
+
   await db.collection('applications').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/journal', async (req, res) => {
+  const owner = await getVerifiedOwner(req.query.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
+
+  const entries = await db.collection('journal').find({}).sort({ createdAt: -1 }).toArray();
+  res.json(entries);
+});
+
+app.delete('/api/admin/journal', async (req, res) => {
+  const owner = await getVerifiedOwner(req.query.initData);
+  if (!owner) return res.status(403).json({ error: 'forbidden' });
+
+  await db.collection('journal').deleteMany({});
   res.json({ ok: true });
 });
 
@@ -900,14 +1019,17 @@ app.post('/api/admin/events', async (req, res) => {
   if (!owner) return res.status(403).json({ error: 'forbidden' });
 
   const text = (req.body.text || '').trim();
-  const date = (req.body.date || '').trim();
-  if (!text || !date) return res.status(400).json({ error: 'invalid_input' });
+  const dateFrom = (req.body.dateFrom || '').trim();
+  const dateTo = (req.body.dateTo || dateFrom || '').trim();
+  if (!text || !dateFrom || !dateTo) return res.status(400).json({ error: 'invalid_input' });
+  if (dateTo < dateFrom) return res.status(400).json({ error: 'invalid_range' });
 
   const imageData = parseDataUrl(req.body.imageBase64);
 
   const result = await db.collection('events').insertOne({
     text,
-    date,
+    dateFrom,
+    dateTo,
     imageMime: imageData ? imageData.mime : null,
     imageData: imageData ? imageData.buffer : null,
     createdBy: owner.user.id,
@@ -921,9 +1043,9 @@ app.get('/api/admin/events', async (req, res) => {
   const owner = await getVerifiedOwner(req.query.initData);
   if (!owner) return res.status(403).json({ error: 'forbidden' });
 
-  const list = await db.collection('events').find({}, { projection: { imageData: 0 } }).sort({ date: -1 }).toArray();
+  const list = await db.collection('events').find({}, { projection: { imageData: 0 } }).sort({ dateFrom: -1 }).toArray();
   const { dateStr: today } = nowInStudioTZ();
-  res.json(list.map(e => ({ ...e, active: e.date >= today, hasImage: !!e.imageMime })));
+  res.json(list.map(e => ({ ...e, active: e.dateTo >= today, hasImage: !!e.imageMime })));
 });
 
 app.delete('/api/admin/events/:id', async (req, res) => {
@@ -940,8 +1062,8 @@ app.get('/api/events/active', async (req, res) => {
 
   const { dateStr: today } = nowInStudioTZ();
   const list = await db.collection('events')
-    .find({ date: { $gte: today } }, { projection: { imageData: 0 } })
-    .sort({ date: 1 })
+    .find({ dateTo: { $gte: today } }, { projection: { imageData: 0 } })
+    .sort({ dateFrom: 1 })
     .toArray();
   res.json(list.map(e => ({ ...e, hasImage: !!e.imageMime })));
 });

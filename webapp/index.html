@@ -103,6 +103,10 @@
     cursor: pointer;
   }
   .subtab-btn.active { background: var(--bg-card); border-color: var(--accent-pink); color: var(--accent-pink); }
+  .trainer-info-card { display: flex; gap: 12px; align-items: flex-start; }
+  .trainer-avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+  .trainer-avatar-placeholder { display: flex; align-items: center; justify-content: center; background: var(--accent-pink); color: #fff; font-weight: bold; font-size: 20px; }
+  .trainer-social-link { color: var(--accent-pink); text-decoration: none; }
   .placeholder-note { color: var(--text-secondary); font-size: 13px; margin-top: 12px; }
 
   .admin-form textarea {
@@ -277,6 +281,7 @@
   <div class="tabbar" id="tabbar">
     <button class="tab-btn active" data-tab="schedule" onclick="switchTab('schedule')">Запись</button>
     <button class="tab-btn" data-tab="myschedule" onclick="switchTab('myschedule')">Моё расписание</button>
+    <button class="tab-btn" data-tab="trainers" onclick="switchTab('trainers')">Тренеры</button>
   </div>
 
   <div id="tab-schedule" class="tab-panel">
@@ -288,6 +293,11 @@
     <h1>Моё расписание</h1>
     <div id="eventsBanner"></div>
     <div id="myScheduleList" class="class-list"></div>
+  </div>
+
+  <div id="tab-trainers" class="tab-panel" style="display:none">
+    <h1>Тренеры</h1>
+    <div id="publicTrainersList" class="class-list"></div>
   </div>
 
   <div id="tab-applications" class="tab-panel" style="display:none">
@@ -351,13 +361,33 @@
 
     <div id="subtab-events" class="subtab-panel" style="display:none">
       <div class="admin-form">
-        <label>Дата мероприятия</label>
-        <input type="date" id="eventDateInput">
+        <label>Дата с</label>
+        <input type="date" id="eventDateFromInput">
+        <label>Дата по (оставь пустым, если мероприятие на один день)</label>
+        <input type="date" id="eventDateToInput">
         <textarea id="eventTextInput" rows="4" placeholder="Текст мероприятия..."></textarea>
         <input type="file" id="eventImageInput" accept="image/*">
         <button class="primary-btn" onclick="createEvent()">Создать мероприятие</button>
       </div>
       <div id="eventsAdminList" class="class-list section-gap"></div>
+    </div>
+
+    <div id="subtab-journal" class="subtab-panel" style="display:none">
+      <button class="wizard-opt-delete" onclick="clearJournal()">🗑 Очистить журнал</button>
+      <div id="journalList" class="class-list section-gap"></div>
+    </div>
+
+    <div id="subtab-trainerinfo" class="subtab-panel" style="display:none">
+      <div class="admin-form">
+        <label>О себе</label>
+        <textarea id="trainerInfoBioInput" rows="4" placeholder="Пара слов о себе, опыт, направления..."></textarea>
+        <label>Ссылки (по одной на строку, формат: Название|Ссылка)</label>
+        <textarea id="trainerInfoLinksInput" rows="3" placeholder="Instagram|https://instagram.com/username"></textarea>
+        <label>Фото профиля</label>
+        <div id="trainerInfoAvatarPreview"></div>
+        <input type="file" id="trainerInfoAvatarInput" accept="image/*">
+        <button class="primary-btn" onclick="saveMyTrainerInfo()">Сохранить</button>
+      </div>
     </div>
   </div>
 </div>
@@ -416,6 +446,13 @@ function copyTrainerNick(username) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => tg.showAlert('Ник скопирован: ' + text)).catch(() => {});
   }
+}
+
+function participantLinkHtml(p) {
+  const displayName = p.name || (p.username ? '@' + p.username : 'Без имени');
+  if (!p.username) return displayName;
+  const cleanUsername = String(p.username).replace(/^@/, '');
+  return `<a class="trainer-nick" href="https://t.me/${cleanUsername}" target="_blank" onclick="event.stopPropagation()">${displayName}</a>`;
 }
 
 function normalizeTime(time) {
@@ -667,6 +704,36 @@ async function submitApplication() {
   }
 }
 
+async function loadPublicTrainers() {
+  const el = document.getElementById('publicTrainersList');
+  el.innerHTML = '<div class="empty">Загрузка...</div>';
+  const list = await fetch('/api/trainers-public?initData=' + encodeURIComponent(initData)).then(r => r.json());
+
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">Пока нет информации о тренерах</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(t => {
+    const avatar = t.hasAvatar
+      ? `<img class="trainer-avatar" src="/api/trainer-info/${t.telegramId}/avatar?initData=${encodeURIComponent(initData)}">`
+      : `<div class="trainer-avatar trainer-avatar-placeholder">${(t.name || '?')[0]}</div>`;
+    const linksHtml = t.links.length
+      ? t.links.map(l => `<a class="trainer-social-link" href="${l.url}" target="_blank">${l.label}</a>`).join(' · ')
+      : '';
+    return `
+      <div class="class-item trainer-info-card">
+        ${avatar}
+        <div class="info">
+          <div class="day-time">${t.name}${t.isOwner ? ' <span class="owner-badge">владелец</span>' : ''}</div>
+          ${t.bio ? `<div class="type">${t.bio}</div>` : ''}
+          ${linksHtml ? `<div class="type">${linksHtml}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 async function loadMySchedule() {
   loadActiveEventsBanner();
   const list = sortByWeekdayThenTime(await fetch('/api/myschedule?initData=' + encodeURIComponent(initData)).then(r => r.json()));
@@ -680,7 +747,7 @@ async function loadMySchedule() {
   if (isTrainer) {
     el.innerHTML = list.map(c => {
       const participants = (c.participants || []).length
-        ? c.participants.map(p => `<div class="app-summary-line">• ${p.name}${p.group ? ' — ' + p.group : ''}</div>`).join('')
+        ? c.participants.map(p => `<div class="app-summary-line">• ${participantLinkHtml(p)}${p.group ? ' — ' + p.group : ''}</div>`).join('')
         : '<div class="app-summary-line">Пока никто не записан</div>';
       return `
         <div class="class-item" style="flex-direction:column;align-items:stretch">
@@ -752,6 +819,8 @@ const ADMIN_SUBTABS_ALL = [
   { id: 'calendar', label: 'Календарь', ownerOnly: false },
   { id: 'participants', label: 'Участники', ownerOnly: false },
   { id: 'events', label: 'Мероприятия', ownerOnly: true },
+  { id: 'journal', label: 'Журнал', ownerOnly: true },
+  { id: 'trainerinfo', label: 'Информация', ownerOnly: false },
 ];
 
 function currentAdminSubtabs() {
@@ -777,6 +846,7 @@ function switchTab(tabId) {
   document.getElementById('tab-' + tabId).style.display = 'block';
   if (tabId === 'schedule') initApplyTab();
   else if (tabId === 'myschedule') loadMySchedule();
+  else if (tabId === 'trainers') loadPublicTrainers();
   else if (tabId === 'applications') loadApplications();
   else if (tabId === 'classes') startClassWizard();
   else if (tabId === 'admin') switchAdminSubtab(currentAdminSubtabs()[0].id);
@@ -791,6 +861,8 @@ function switchAdminSubtab(subId) {
   else if (subId === 'calendar') initCalendar();
   else if (subId === 'participants') loadParticipants();
   else if (subId === 'events' && isOwner) loadEventsAdmin();
+  else if (subId === 'journal' && isOwner) loadJournal();
+  else if (subId === 'trainerinfo') loadMyTrainerInfo();
 }
 
 async function loadTrainers() {
@@ -964,7 +1036,7 @@ function appInfoCard(a) {
   return `
     <button class="wizard-back" onclick="closeAssign()">← ко всем заявкам</button>
     <div class="status-card">
-      <div class="title">${a.name} (${a.username ? '@' + a.username : a.phone})</div>
+      <div class="title">${a.name} (${a.username ? participantLinkHtml({ name: '@' + a.username, username: a.username }) : a.phone})</div>
       <p class="app-summary-line">Направление: ${a.direction}, группа: ${a.group}</p>
       <p class="app-summary-line">Тренер в заявке: ${a.trainerName || 'не выбран'}</p>
       <p class="app-summary-line" style="margin-top:6px">Удобное время:<br>${availabilityText}</p>
@@ -1054,7 +1126,7 @@ function renderApplicationsList() {
         <div class="class-item" style="cursor:pointer" onclick="openAssign('${a._id}')">
           <div class="info">
             <div class="day-time">${a.name} — ${a.direction} (${a.group})</div>
-            <div class="type">Тренер: ${a.trainerName || 'не выбран'} · ${a.username ? '@' + a.username : a.phone}</div>
+            <div class="type">Тренер: ${a.trainerName || 'не выбран'} · ${a.username ? participantLinkHtml({ name: '@' + a.username, username: a.username }) : a.phone}</div>
           </div>
         </div>
       `).join('')
@@ -1221,7 +1293,7 @@ function renderInlineEditor(cls) {
     const already = cls.participants.some(p => p.chatId === a.chatId);
     let html = '<div style="margin:6px 0 12px">';
     cls.participants.forEach(p => {
-      html += `<div class="app-summary-line">${p.name}${p.group ? ' — ' + p.group : ''} <button class="wizard-opt" style="padding:2px 8px;margin-left:6px" onclick="assignRemoveParticipant('${cls._id}',${p.chatId})">×</button></div>`;
+      html += `<div class="app-summary-line">${participantLinkHtml(p)}${p.group ? ' — ' + p.group : ''} <button class="wizard-opt" style="padding:2px 8px;margin-left:6px" onclick="assignRemoveParticipant('${cls._id}',${p.chatId})">×</button></div>`;
     });
     if (!already) {
       html += `<button class="wizard-opt" style="margin-top:6px" onclick="assignAddApplicant('${cls._id}')">+ Добавить ${a.name} (эта заявка)</button>`;
@@ -1562,7 +1634,7 @@ async function loadParticipants() {
   el.innerHTML = list.map(p => `
     <div class="class-item">
       <div class="info">
-        <div class="day-time">${p.username ? '@' + p.username : (p.name || 'Без ника')}</div>
+        <div class="day-time">${participantLinkHtml({ name: p.name, username: p.username })}</div>
         <div class="type">${p.directions}${isOwner ? ' — ' + p.trainers : ''}</div>
       </div>
     </div>
@@ -1608,6 +1680,10 @@ async function sendBroadcast() {
 
 // ===================== МЕРОПРИЯТИЯ =====================
 
+function formatEventDateRange(e) {
+  return e.dateFrom === e.dateTo ? e.dateFrom : `${e.dateFrom} – ${e.dateTo}`;
+}
+
 async function loadEventsAdmin() {
   const el = document.getElementById('eventsAdminList');
   el.innerHTML = '<div class="empty">Загрузка...</div>';
@@ -1620,7 +1696,7 @@ async function loadEventsAdmin() {
 
   el.innerHTML = list.map(e => `
     <div class="class-item event-admin-item">
-      <div><b>${e.date}</b><span class="badge ${e.active ? 'active' : 'past'}">${e.active ? 'активно' : 'прошло'}</span></div>
+      <div><b>${formatEventDateRange(e)}</b><span class="badge ${e.active ? 'active' : 'past'}">${e.active ? 'активно' : 'прошло'}</span></div>
       <div class="type">${e.text}</div>
       <button class="wizard-opt-delete" onclick="deleteEvent('${e._id}')">🗑 Удалить</button>
     </div>
@@ -1628,24 +1704,27 @@ async function loadEventsAdmin() {
 }
 
 async function createEvent() {
-  const date = document.getElementById('eventDateInput').value;
+  const dateFrom = document.getElementById('eventDateFromInput').value;
+  const dateTo = document.getElementById('eventDateToInput').value || dateFrom;
   const text = document.getElementById('eventTextInput').value.trim();
   const fileInput = document.getElementById('eventImageInput');
   const file = fileInput.files[0];
 
-  if (!date || !text) { tg.showAlert('Укажите дату и текст мероприятия'); return; }
+  if (!dateFrom || !text) { tg.showAlert('Укажите дату и текст мероприятия'); return; }
+  if (dateTo < dateFrom) { tg.showAlert('Дата "по" не может быть раньше даты "с"'); return; }
 
   const imageBase64 = await fileToBase64(file);
 
   const res = await fetch('/api/admin/events', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData, date, text, imageBase64 }),
+    body: JSON.stringify({ initData, dateFrom, dateTo, text, imageBase64 }),
   });
   const data = await res.json();
 
   if (data.ok) {
-    document.getElementById('eventDateInput').value = '';
+    document.getElementById('eventDateFromInput').value = '';
+    document.getElementById('eventDateToInput').value = '';
     document.getElementById('eventTextInput').value = '';
     fileInput.value = '';
     loadEventsAdmin();
@@ -1664,10 +1743,97 @@ function eventCardHtml(e) {
   return `
     <div class="event-card">
       ${img}
-      <div class="event-date">${e.date}</div>
+      <div class="event-date">${formatEventDateRange(e)}</div>
       <div class="event-text">${e.text}</div>
     </div>
   `;
+}
+
+const JOURNAL_STATUS_LABELS = {
+  pending: 'Не обработано',
+  confirmed: 'Успешно',
+  no_slots: 'Нет свободного времени',
+  deleted: 'Удалена',
+};
+
+function formatJournalDate(d) {
+  return new Date(d).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function loadJournal() {
+  const el = document.getElementById('journalList');
+  el.innerHTML = '<div class="empty">Загрузка...</div>';
+  const list = await fetch('/api/admin/journal?initData=' + encodeURIComponent(initData)).then(r => r.json());
+
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">Журнал пуст</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(j => `
+    <div class="class-item">
+      <div class="info">
+        <div class="day-time">${j.name}${j.username ? ' — ' + participantLinkHtml({ name: '@' + j.username, username: j.username }) : ''}</div>
+        <div class="type">${j.direction}, ${j.group}${j.trainerName ? ' — ' + j.trainerName : ''}</div>
+        <div class="type">${formatJournalDate(j.createdAt)} · <b>${JOURNAL_STATUS_LABELS[j.status] || j.status}</b></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function clearJournal() {
+  tg.showConfirm('Очистить весь журнал заявок? Это действие необратимо.', async (confirmed) => {
+    if (!confirmed) return;
+    await fetch('/api/admin/journal?initData=' + encodeURIComponent(initData), { method: 'DELETE' });
+    loadJournal();
+  });
+}
+
+async function loadMyTrainerInfo() {
+  const info = await fetch('/api/my-trainer-info?initData=' + encodeURIComponent(initData)).then(r => r.json());
+  document.getElementById('trainerInfoBioInput').value = info.bio || '';
+  document.getElementById('trainerInfoLinksInput').value = (info.links || []).map(l => `${l.label}|${l.url}`).join('\n');
+
+  const preview = document.getElementById('trainerInfoAvatarPreview');
+  preview.innerHTML = info.hasAvatar
+    ? `<img class="trainer-avatar" src="/api/trainer-info/${currentUserId}/avatar?initData=${encodeURIComponent(initData)}">`
+    : '';
+}
+
+async function saveMyTrainerInfo() {
+  const bio = document.getElementById('trainerInfoBioInput').value.trim();
+  const linksRaw = document.getElementById('trainerInfoLinksInput').value;
+  const links = linksRaw.split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      const idx = line.indexOf('|');
+      if (idx === -1) return null;
+      return { label: line.slice(0, idx).trim(), url: line.slice(idx + 1).trim() };
+    })
+    .filter(l => l && l.label && l.url);
+
+  const fileInput = document.getElementById('trainerInfoAvatarInput');
+  const file = fileInput.files[0];
+  const avatarBase64 = file ? await fileToBase64(file) : undefined;
+
+  const body = { initData, bio, links };
+  if (avatarBase64) body.avatarBase64 = avatarBase64;
+
+  const res = await fetch('/api/my-trainer-info', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+
+  if (data.ok) {
+    fileInput.value = '';
+    tg.showAlert('Информация сохранена');
+    loadMyTrainerInfo();
+  } else {
+    tg.showAlert('Не получилось сохранить');
+  }
 }
 
 async function loadActiveEventsBanner() {
@@ -1770,7 +1936,7 @@ function renderCalendarAgenda(data) {
     if (canExpand && isExpanded) {
       if (c.participants.length) {
         participantsBlock = '<div class="cal-participants">' +
-          c.participants.map(p => `<div class="app-summary-line">• ${p.name}${p.group ? ' — ' + p.group : ''}</div>`).join('') +
+          c.participants.map(p => `<div class="app-summary-line">• ${participantLinkHtml(p)}${p.group ? ' — ' + p.group : ''}</div>`).join('') +
           '</div>';
       } else {
         participantsBlock = '<div class="cal-participants"><div class="app-summary-line">Пока никто не записан</div></div>';
