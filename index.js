@@ -101,7 +101,7 @@ async function connectDB() {
     await db.collection('trainers').updateOne(
       { telegramId: ADMIN_ID },
       { 
-        $setOnInsert: { telegramId: ADMIN_ID, name: 'Владелец', username: null, isOwner: true, addedAt: new Date() },
+        $setOnInsert: { telegramId: ADMIN_ID, name: 'Владелец', username: null, addedAt: new Date() },
         $set: { isOwner: true },
       },
       { upsert: true }
