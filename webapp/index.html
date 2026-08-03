@@ -297,7 +297,19 @@
 
   <div id="tab-trainers" class="tab-panel" style="display:none">
     <h1>Тренеры</h1>
-    <div id="publicTrainersList" class="class-list"></div>
+    <div id="trainerOwnerBox" style="display:none">
+      <div id="trainersList" class="class-list"></div>
+      <div class="admin-form">
+        <input id="trainerIdInput" placeholder="Telegram ID тренера">
+        <input id="trainerNameInput" placeholder="Имя тренера">
+        <input id="trainerUsernameInput" placeholder="Никнейм тренера (без @)">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary)">
+          <input type="checkbox" id="trainerOwnerInput"> Сделать владельцем
+        </label>
+        <button class="primary-btn" onclick="addTrainer()">Добавить тренера</button>
+      </div>
+    </div>
+    <div id="publicTrainersList" class="class-list section-gap"></div>
   </div>
 
   <div id="tab-applications" class="tab-panel" style="display:none">
@@ -315,19 +327,6 @@
   <div id="tab-admin" class="tab-panel" style="display:none">
     <h1>Админка</h1>
     <div class="tabbar subtabbar" id="adminSubtabbar"></div>
-
-    <div id="subtab-trainers" class="subtab-panel" style="display:none">
-      <div id="trainersList" class="class-list"></div>
-      <div class="admin-form">
-        <input id="trainerIdInput" placeholder="Telegram ID тренера">
-        <input id="trainerNameInput" placeholder="Имя тренера">
-        <input id="trainerUsernameInput" placeholder="Никнейм тренера (без @)">
-        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary)">
-          <input type="checkbox" id="trainerOwnerInput"> Сделать владельцем
-        </label>
-        <button class="primary-btn" onclick="addTrainer()">Добавить тренера</button>
-      </div>
-    </div>
 
     <div id="subtab-directions" class="subtab-panel" style="display:none">
       <div id="directionsList" class="class-list"></div>
@@ -536,7 +535,7 @@ function renderApplyWizard() {
 
   if (applyState.step === 'trainer') {
     const options = trainersCache.map(t => {
-      const displayName = formatTrainerName(t.name || t.rawName, t.username);
+      const displayName = formatTrainerName(t.rawName || t.name, t.username);
       const safeName = displayName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
       const deleteBtnHtml = isOwner ? `
@@ -725,7 +724,7 @@ async function loadPublicTrainers() {
       <div class="class-item trainer-info-card">
         ${avatar}
         <div class="info">
-          <div class="day-time">${t.name}${t.isOwner ? ' <span class="owner-badge">владелец</span>' : ''}</div>
+          <div class="day-time">${participantLinkHtml({ name: t.name, username: t.username })}${t.isOwner ? ' <span class="owner-badge">владелец</span>' : ''}</div>
           ${t.bio ? `<div class="type">${t.bio}</div>` : ''}
           ${linksHtml ? `<div class="type">${linksHtml}</div>` : ''}
         </div>
@@ -814,7 +813,6 @@ function buildAdminTabs() {
 }
 
 const ADMIN_SUBTABS_ALL = [
-  { id: 'trainers', label: 'Тренеры', ownerOnly: true },
   { id: 'directions', label: 'Направления', ownerOnly: false },
   { id: 'calendar', label: 'Календарь', ownerOnly: false },
   { id: 'participants', label: 'Участники', ownerOnly: false },
@@ -846,7 +844,11 @@ function switchTab(tabId) {
   document.getElementById('tab-' + tabId).style.display = 'block';
   if (tabId === 'schedule') initApplyTab();
   else if (tabId === 'myschedule') loadMySchedule();
-  else if (tabId === 'trainers') loadPublicTrainers();
+  else if (tabId === 'trainers') {
+    document.getElementById('trainerOwnerBox').style.display = isOwner ? 'block' : 'none';
+    if (isOwner) loadTrainers();
+    loadPublicTrainers();
+  }
   else if (tabId === 'applications') loadApplications();
   else if (tabId === 'classes') startClassWizard();
   else if (tabId === 'admin') switchAdminSubtab(currentAdminSubtabs()[0].id);
@@ -856,8 +858,7 @@ function switchAdminSubtab(subId) {
   document.querySelectorAll('.subtab-panel').forEach(p => p.style.display = 'none');
   document.querySelectorAll('.subtab-btn').forEach(b => b.classList.toggle('active', b.dataset.subtab === subId));
   document.getElementById('subtab-' + subId).style.display = 'block';
-  if (subId === 'trainers' && isOwner) loadTrainers();
-  else if (subId === 'directions') loadDirections();
+  if (subId === 'directions') loadDirections();
   else if (subId === 'calendar') initCalendar();
   else if (subId === 'participants') loadParticipants();
   else if (subId === 'events' && isOwner) loadEventsAdmin();
@@ -905,6 +906,7 @@ async function addTrainer() {
     document.getElementById('trainerOwnerInput').checked = false;
     tg.HapticFeedback.notificationOccurred('success');
     loadTrainers();
+    loadPublicTrainers();
   } else {
     tg.showAlert(data.error === 'already_exists' ? 'Тренер с таким ID уже есть.' : 'Не получилось сохранить.');
   }
@@ -918,6 +920,7 @@ async function deleteTrainer(telegramId) {
     if (data.success || data.ok) {
       tg.HapticFeedback.notificationOccurred('success');
       loadTrainers();
+      loadPublicTrainers();
       trainersCache = await fetch('/api/trainers').then(r => r.json());
     } else {
       tg.showAlert('Не удалось удалить тренера.');
@@ -1285,7 +1288,7 @@ function renderInlineEditor(cls) {
   if (assignState.editingField === 'trainer') {
     return '<div class="wizard-options" style="margin:6px 0 12px">' +
       trainersCache.map(t => {
-        const displayName = formatTrainerName(t.name || t.rawName, t.username);
+        const displayName = formatTrainerName(t.rawName || t.name, t.username);
         return `<button class="wizard-opt" onclick="assignPatchClass('${cls._id}','trainerId',${t.telegramId})">${displayName}</button>`;
       }).join('') + '</div>';
   }
@@ -1383,7 +1386,7 @@ function renderNewSlotRow(h) {
   if (!draft.trainerId) {
     row += '<div class="wizard-options" style="margin:6px 0 12px">' +
       trainersCache.map(t => {
-        const displayName = formatTrainerName(t.name || t.rawName, t.username);
+        const displayName = formatTrainerName(t.rawName || t.name, t.username);
         return `<button class="wizard-opt" onclick="assignNewSlotPick('trainerId',${t.telegramId})">${displayName}</button>`;
       }).join('') + '</div>';
     return row;
@@ -1587,7 +1590,7 @@ async function renderWizard() {
     el.innerHTML = backButtonHtml() +
       `<div class="wizard-step-label">${wizardState.direction} — кто ведёт?</div><div class="wizard-options">` +
       trainers.map(t => {
-        const displayName = formatTrainerName(t.name || t.rawName, t.username);
+        const displayName = formatTrainerName(t.rawName || t.name, t.username);
         return `<button class="wizard-opt" onclick="pickTrainer(${t.telegramId})">${displayName}</button>`;
       }).join('') +
       '</div>';
