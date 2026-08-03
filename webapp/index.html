@@ -419,7 +419,7 @@ function copyTrainerNick(username) {
 }
 
 function normalizeTime(time) {
-  if (time == null || time === '') return '';
+  if (time == null || time === '') return null;
   const parts = String(time).trim().split(':');
   const h = parseInt(parts[0], 10);
   const m = parseInt(parts[1] || '0', 10);
@@ -1135,11 +1135,19 @@ async function loadAgenda() {
     return;
   }
   if (!trainersCache.length) trainersCache = await fetch('/api/trainers').then(r => r.json());
+  
   const res = await fetch(
     `/api/admin/agenda?initData=${encodeURIComponent(initData)}&day=${assignState.day}&room=${assignState.room}`
   );
   const data = await res.json();
-  assignState.agenda = Array.isArray(data) ? data : [];
+  
+  // Нормализуем данные
+  assignState.agenda = Array.isArray(data) ? data.map(c => ({
+    ...c,
+    time: normalizeTime(c.time),
+    room: Number(c.room)
+  })) : [];
+  
   if (!res.ok) {
     tg.showAlert('Не удалось загрузить расписание зала.');
   }
@@ -1317,6 +1325,17 @@ async function assignCreateNewSlot(time) {
   const savedDay = assignState.day;
   const savedRoom = assignState.room;
 
+  // Отладка - проверяем данные перед отправкой
+  console.log('Creating slot with:', {
+    day: savedDay,
+    time: normalizeTime(time),
+    room: Number(savedRoom),
+    direction: draft.direction,
+    trainerId: Number(draft.trainerId),
+    group: draft.group,
+    applicationId: appIdString(assignState.application)
+  });
+
   if (!savedDay || savedRoom == null) {
     tg.showAlert('Сначала выберите день и зал.');
     assignGoToDay();
@@ -1371,6 +1390,16 @@ const WEEKDAYS = [
 ];
 const WORK_HOURS = [];
 for (let h = 9; h <= 20; h++) WORK_HOURS.push(String(h).padStart(2, '0') + ':00');
+
+// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ НОРМАЛИЗАЦИИ ВРЕМЕНИ
+function normalizeTimeForCompare(time) {
+  if (!time) return null;
+  const parts = String(time).trim().split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1] || '0', 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
 
 function dayLabel(key) {
   const found = WEEKDAYS.find(([k]) => k === key);
@@ -1440,20 +1469,33 @@ async function renderWizard() {
 
   if (!wizardState.time) {
     const classes = await fetch('/api/admin/classes?initData=' + encodeURIComponent(initData) + '&day=' + wizardState.day).then(r => r.json());
-    const busyHours = new Set(classes.map(c => c.time));
+    // ИСПРАВЛЕНИЕ: нормализуем время для сравнения
+    const busyHours = new Set(classes.map(c => normalizeTime(c.time)));
     el.innerHTML = backButtonHtml() +
       `<div class="wizard-step-label">${dayLabel(wizardState.day)} — выбери время</div><div class="wizard-options">` +
-      WORK_HOURS.map(h => `<button class="wizard-opt" ${busyHours.has(h) ? 'disabled' : ''} onclick="pickTime('${h}')">${h}${busyHours.has(h) ? ' (занято)' : ''}</button>`).join('') +
+      WORK_HOURS.map(h => {
+        const isBusy = busyHours.has(h);
+        return `<button class="wizard-opt" ${isBusy ? 'disabled' : ''} onclick="pickTime('${h}')">${h}${isBusy ? ' (занято)' : ''}</button>`;
+      }).join('') +
       '</div>';
     return;
   }
 
   if (!wizardState.room) {
     const classes = await fetch('/api/admin/classes?initData=' + encodeURIComponent(initData) + '&day=' + wizardState.day).then(r => r.json());
-    const busyRooms = new Set(classes.filter(c => c.time === wizardState.time).map(c => c.room));
+    // ИСПРАВЛЕНИЕ: нормализуем время и комнату для сравнения
+    const busyRooms = new Set(
+      classes
+        .filter(c => normalizeTime(c.time) === wizardState.time)
+        .map(c => Number(c.room)) // Преобразуем в число
+        .filter(r => !isNaN(r))
+    );
     el.innerHTML = backButtonHtml() +
       `<div class="wizard-step-label">${dayLabel(wizardState.day)}, ${wizardState.time} — выбери зал</div><div class="wizard-options">` +
-      [1, 2].map(r => `<button class="wizard-opt" ${busyRooms.has(r) ? 'disabled' : ''} onclick="pickRoom(${r})">Зал ${r}${busyRooms.has(r) ? ' (занят)' : ''}</button>`).join('') +
+      [1, 2].map(r => {
+        const isBusy = busyRooms.has(r);
+        return `<button class="wizard-opt" ${isBusy ? 'disabled' : ''} onclick="pickRoom(${r})">Зал ${r}${isBusy ? ' (занят)' : ''}</button>`;
+      }).join('') +
       '</div>';
     return;
   }
@@ -1751,6 +1793,36 @@ function renderCalendarAgenda(data) {
 }
 
 window.addEventListener('DOMContentLoaded', initApp);
+// Отладочная функция - вызовите в консоли браузера
+async function debugCheckClasses() {
+  try {
+    const res = await fetch('/api/admin/classes?initData=' + encodeURIComponent(initData));
+    const data = await res.json();
+    console.log('=== ВСЕ ЗАНЯТИЯ В БАЗЕ ===');
+    console.log('Количество:', data.length);
+    data.forEach((c, i) => {
+      console.log(`${i+1}. День: ${c.day}, Время: "${c.time}" -> нормализовано: "${normalizeTime(c.time)}", Зал: "${c.room}" -> число: ${Number(c.room)}`);
+    });
+    return data;
+  } catch(e) {
+    console.error('Ошибка отладки:', e);
+  }
+}
+
+// Также добавьте функцию для проверки конкретного дня
+async function debugCheckDay(day) {
+  try {
+    const res = await fetch('/api/admin/classes?initData=' + encodeURIComponent(initData) + '&day=' + day);
+    const data = await res.json();
+    console.log(`=== ЗАНЯТИЯ НА ${day} ===`);
+    data.forEach(c => {
+      console.log(`Время: "${c.time}" (норм: "${normalizeTime(c.time)}"), Зал: "${c.room}" (число: ${Number(c.room)})`);
+    });
+    return data;
+  } catch(e) {
+    console.error('Ошибка:', e);
+  }
+}
 </script>
 </body>
 </html>

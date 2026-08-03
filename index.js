@@ -81,6 +81,14 @@ async function connectDB() {
     await client.connect();
     db = client.db('pole_dance');
     
+    // ПРИНУДИТЕЛЬНО УДАЛЯЕМ СТАРЫЙ ИНДЕКС
+    try {
+      await db.collection('classes').dropIndex('date_1_time_1_room_1');
+      console.log('✅ Старый индекс удален');
+    } catch(e) {
+      console.log('ℹ️ Старого индекса нет');
+    }
+    
     await db.collection('bookings').createIndex({ chatId: 1 }, { unique: true });
     await db.collection('trainers').createIndex({ telegramId: 1 }, { unique: true });
     await db.collection('directions').createIndex({ name: 1 }, { unique: true });
@@ -89,7 +97,7 @@ async function connectDB() {
     await db.collection('applications').createIndex({ chatId: 1, status: 1 });
     await db.collection('events').createIndex({ date: 1 });
 
-    // Главный админ с возможностью обновления его username/имени
+    // Главный админ
     await db.collection('trainers').updateOne(
       { telegramId: ADMIN_ID },
       { 
@@ -104,6 +112,8 @@ async function connectDB() {
     console.error('❌ Ошибка MongoDB:', err);
   }
 }
+
+// ВОТ ЭТА СТРОКА ОБЯЗАТЕЛЬНО ДОЛЖНА БЫТЬ
 connectDB();
 
 const schedule = [
