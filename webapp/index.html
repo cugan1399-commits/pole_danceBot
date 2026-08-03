@@ -449,7 +449,7 @@ function copyTrainerNick(username) {
 }
 
 function participantLinkHtml(p) {
-  const displayName = p.name || (p.username ? '@' + p.username : 'Без имени');
+  const displayName = p.username ? '@' + p.username : (p.name || 'Без имени');
   if (!p.username) return displayName;
   const cleanUsername = String(p.username).replace(/^@/, '');
   return `<a class="trainer-nick" href="https://t.me/${cleanUsername}" target="_blank" onclick="event.stopPropagation()">${displayName}</a>`;
