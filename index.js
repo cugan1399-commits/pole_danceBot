@@ -379,6 +379,9 @@ app.post('/api/admin/classes', async (req, res) => {
   } catch (err) {
     console.error('POST /api/admin/classes failed:', err);
     if (err.code === 11000) {
+      // Логируем keyPattern/keyValue — если это не { day, time, room },
+      // значит в базе есть лишний/устаревший unique-индекс.
+      console.error('Duplicate key on index:', err.keyPattern, err.keyValue);
       const existing = dayClasses.find(c => isSameSlot(c, day, time, room))
         || await db.collection('classes').findOne({ day, time, room });
       return res.status(409).json({ error: 'slot_taken', existing });
