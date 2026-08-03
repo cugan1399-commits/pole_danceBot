@@ -401,6 +401,28 @@ app.get('/api/admin/classes', async (req, res) => {
   res.json(classes);
 });
 
+app.get('/api/admin/my-classes', async (req, res) => {
+  const auth = await getVerifiedTrainerOrAdmin(req.query.initData);
+  if (!auth) return res.status(403).json({ error: 'forbidden' });
+
+  const filter = auth.isOwner ? {} : { trainerId: auth.user.id };
+  const classes = await db.collection('classes').find(filter).toArray();
+  const classIds = classes.map(c => String(c._id));
+  const bookings = await db.collection('classBookings').find({ classId: { $in: classIds } }).toArray();
+  const countByClassId = {};
+  bookings.forEach(b => { countByClassId[b.classId] = (countByClassId[b.classId] || 0) + 1; });
+
+  const sorted = classes
+    .map(c => ({ ...c, participantsCount: countByClassId[String(c._id)] || 0 }))
+    .sort((a, b) => {
+      const dayDiff = WEEKDAY_ORDER.indexOf(a.day) - WEEKDAY_ORDER.indexOf(b.day);
+      if (dayDiff !== 0) return dayDiff;
+      return String(a.time).localeCompare(String(b.time));
+    });
+
+  res.json(sorted);
+});
+
 app.post('/api/admin/classes', async (req, res) => {
   const auth = await getVerifiedTrainerOrAdmin(req.body.initData);
   if (!auth) return res.status(403).json({ error: 'forbidden' });
@@ -495,9 +517,24 @@ app.delete('/api/admin/classes/:id', async (req, res) => {
   const cls = await db.collection('classes').findOne({ _id: new ObjectId(classId) });
   if (!cls) return res.status(404).json({ error: 'not_found' });
 
-  // Обычный тренер удаляет только свои занятия; владелец — любые
-  if (!auth.isOwner && cls.createdBy !== auth.user.id) {
+  // Обычный тренер удаляет только занятия, где он назначен тренером; владелец — любые
+  if (!auth.isOwner && cls.trainerId !== auth.user.id) {
     return res.status(403).json({ error: 'forbidden' });
+  }
+
+  const bookings = await db.collection('classBookings').find({ classId }).toArray();
+  const dayLbl = WEEKDAYS.find(d => d.key === cls.day)?.label || cls.day;
+  const cancelText =
+    `❌ <b>Занятие отменено</b>\n\n` +
+    `${dayLbl}, ${cls.time} — ${cls.direction}${cls.group ? ' (' + cls.group + ')' : ''}, зал ${cls.room}\n\n` +
+    `Приносим извинения за неудобства. По вопросам — обратитесь к тренеру или в студию: ${OWNER_PHONE}`;
+
+  for (const b of bookings) {
+    try {
+      await sendMessage(b.chatId, cancelText);
+    } catch (err) {
+      console.error('Не удалось отправить уведомление об отмене занятия:', b.chatId, err.message);
+    }
   }
 
   await db.collection('classes').deleteOne({ _id: new ObjectId(classId) });

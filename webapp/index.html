@@ -314,8 +314,17 @@
 
   <div id="tab-applications" class="tab-panel" style="display:none">
     <h1>Заявки</h1>
-    <div id="applicationsList" class="class-list"></div>
-    <div id="assignPanel"></div>
+    <div class="tabbar subtabbar">
+      <button class="subtab-btn active" data-appsub="requests" onclick="switchApplicationsSubtab('requests')">Заявки</button>
+      <button class="subtab-btn" data-appsub="manage" onclick="switchApplicationsSubtab('manage')">Занятия</button>
+    </div>
+    <div id="appsub-requests" class="subtab-panel">
+      <div id="applicationsList" class="class-list"></div>
+      <div id="assignPanel"></div>
+    </div>
+    <div id="appsub-manage" class="subtab-panel" style="display:none">
+      <div id="manageClassesList" class="class-list section-gap"></div>
+    </div>
   </div>
 
   <div id="tab-classes" class="tab-panel" style="display:none">
@@ -838,6 +847,52 @@ function buildAdminSubtabs() {
   });
 }
 
+function switchApplicationsSubtab(subId) {
+  document.querySelectorAll('[data-appsub]').forEach(b => b.classList.toggle('active', b.dataset.appsub === subId));
+  document.getElementById('appsub-requests').style.display = subId === 'requests' ? 'block' : 'none';
+  document.getElementById('appsub-manage').style.display = subId === 'manage' ? 'block' : 'none';
+  if (subId === 'manage') loadManageClasses();
+}
+
+async function loadManageClasses() {
+  const el = document.getElementById('manageClassesList');
+  el.innerHTML = '<div class="empty">Загрузка...</div>';
+  const list = await fetch('/api/admin/my-classes?initData=' + encodeURIComponent(initData)).then(r => r.json());
+
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">Занятий пока нет</div>';
+    return;
+  }
+
+  el.innerHTML = list.map(c => {
+    const dayLbl = WEEKDAYS.find(d => d.key === c.day)?.label || c.day;
+    return `
+      <div class="class-item">
+        <div class="info">
+          <div class="day-time">${dayLbl}, ${c.time} — зал ${c.room}</div>
+          <div class="type">${c.direction}${c.group ? ' — ' + c.group : ''}${isOwner ? ' — ' + formatTrainerNameHtml(c.trainerName, c.trainerUsername) : ''}</div>
+          <div class="type">Записано: ${c.participantsCount}</div>
+        </div>
+        <button class="wizard-opt-delete" onclick="deleteManageClass('${c._id}')">🗑</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function deleteManageClass(classId) {
+  tg.showConfirm('Удалить это занятие? Все записанные участники получат уведомление об отмене.', async (ok) => {
+    if (!ok) return;
+    const res = await fetch(`/api/admin/classes/${classId}?initData=${encodeURIComponent(initData)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.ok) {
+      tg.HapticFeedback.notificationOccurred('success');
+      loadManageClasses();
+    } else {
+      tg.showAlert('Не удалось удалить занятие');
+    }
+  });
+}
+
 function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
@@ -849,7 +904,7 @@ function switchTab(tabId) {
     if (isOwner) loadTrainers();
     loadPublicTrainers();
   }
-  else if (tabId === 'applications') loadApplications();
+  else if (tabId === 'applications') { switchApplicationsSubtab('requests'); loadApplications(); }
   else if (tabId === 'classes') startClassWizard();
   else if (tabId === 'admin') switchAdminSubtab(currentAdminSubtabs()[0].id);
 }
